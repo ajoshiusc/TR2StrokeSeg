@@ -10,6 +10,7 @@ This script calculates common segmentation metrics:
 """
 
 import os
+import csv
 import argparse
 from pathlib import Path
 import nibabel as nib
@@ -253,7 +254,6 @@ def evaluate_dataset(pred_dir, gt_dir, output_file=None):
         
         # Save to CSV if requested
         if output_file:
-            import csv
             with open(output_file, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=['filename', 'dice', 'iou', 
                                                        'sensitivity', 'specificity', 'precision', 'hausdorff'])

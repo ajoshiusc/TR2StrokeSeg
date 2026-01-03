@@ -103,7 +103,7 @@ def train_model(dataset_id, configuration="3d_fullres", fold=0, trainer="nnUNetT
     ]
     
     if num_epochs is not None:
-        cmd.extend(["--npz", str(num_epochs)])
+        cmd.extend(["--num_epochs", str(num_epochs)])
     
     if continue_training:
         cmd.append("-c")

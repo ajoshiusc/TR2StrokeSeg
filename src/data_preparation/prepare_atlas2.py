@@ -96,7 +96,7 @@ def prepare_atlas2_dataset(atlas2_dir, output_dir, dataset_id=1):
     
     print(f"Found {len(subject_folders)} subjects")
     
-    case_id = 0
+    case_id = 1  # Start from 1 for nn-UNet convention
     for subject_folder in subject_folders:
         subject_id = subject_folder.name
         print(f"Processing subject {subject_id}...")
@@ -143,7 +143,6 @@ def prepare_atlas2_dataset(atlas2_dir, output_dir, dataset_id=1):
             continue
         
         # Copy and rename files to nn-UNet format
-        case_id += 1
         output_image_name = f"Atlas2_{case_id:03d}_0000.nii.gz"
         output_label_name = f"Atlas2_{case_id:03d}.nii.gz"
         
@@ -151,12 +150,14 @@ def prepare_atlas2_dataset(atlas2_dir, output_dir, dataset_id=1):
         shutil.copy2(mask_file, labels_tr_folder / output_label_name)
         
         print(f"  Processed case {case_id}: {subject_id}")
+        case_id += 1
     
     # Create dataset.json
-    create_dataset_json(dataset_folder, case_id)
+    # Total cases is case_id - 1 since we started from 1 and incremented after each case
+    create_dataset_json(dataset_folder, case_id - 1)
     
     print(f"\nDataset preparation complete!")
-    print(f"Total cases processed: {case_id}")
+    print(f"Total cases processed: {case_id - 1}")
     print(f"Dataset location: {dataset_folder}")
     print(f"\nNext steps:")
     print(f"1. Set environment variable: export nnUNet_raw='{output_dir}'")

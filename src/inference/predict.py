@@ -92,8 +92,6 @@ def run_inference(input_dir, output_dir, model_dir, dataset_id, configuration="3
         os.environ['nnUNet_results'] = str(model_dir)
         print(f"Using model from: {model_dir}")
     
-    dataset_name = f"Dataset{dataset_id:03d}_Atlas2"
-    
     cmd = [
         "nnUNetv2_predict",
         "-i", str(input_dir),
