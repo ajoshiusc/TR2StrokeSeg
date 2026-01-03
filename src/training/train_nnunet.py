@@ -16,7 +16,27 @@ def check_nnunet_installation():
     """Check if nn-UNet is properly installed."""
     try:
         import nnunetv2
-        print(f"✓ nn-UNet v2 is installed (version: {nnunetv2.__version__})")
+        # Some nnunetv2 package builds may not expose a __version__ attribute.
+        # Try to read the attribute first, then fall back to importlib.metadata.
+        version = getattr(nnunetv2, "__version__", None)
+        if version is None:
+            try:
+                from importlib import metadata
+            except Exception:
+                try:
+                    import importlib_metadata as metadata
+                except Exception:
+                    metadata = None
+
+            if metadata is not None:
+                try:
+                    version = metadata.version("nnunetv2")
+                except Exception:
+                    version = "unknown"
+            else:
+                version = "unknown"
+
+        print(f"✓ nn-UNet v2 is installed (version: {version})")
         return True
     except ImportError:
         print("✗ nn-UNet v2 is not installed")
@@ -234,8 +254,37 @@ Examples:
         action="store_true",
         help="Skip environment and installation checks"
     )
+
+    parser.add_argument(
+        "--nnunet_raw",
+        type=str,
+        default=None,
+        help="Path to nnUNet_raw (overrides nnUNet_raw env var)"
+    )
+
+    parser.add_argument(
+        "--nnunet_preprocessed",
+        type=str,
+        default=None,
+        help="Path to nnUNet_preprocessed (overrides nnUNet_preprocessed env var)"
+    )
+
+    parser.add_argument(
+        "--nnunet_results",
+        type=str,
+        default=None,
+        help="Path to nnUNet_results (overrides nnUNet_results env var)"
+    )
     
     args = parser.parse_args()
+
+    # Allow overriding environment variables from CLI arguments
+    if args.nnunet_raw:
+        os.environ['nnUNet_raw'] = args.nnunet_raw
+    if args.nnunet_preprocessed:
+        os.environ['nnUNet_preprocessed'] = args.nnunet_preprocessed
+    if args.nnunet_results:
+        os.environ['nnUNet_results'] = args.nnunet_results
     
     # Perform checks
     if not args.skip_checks:
