@@ -126,7 +126,7 @@ def train_model(dataset_id, configuration="3d_fullres", fold=0, trainer="nnUNetT
         cmd.extend(["--num_epochs", str(num_epochs)])
     
     if continue_training:
-        cmd.append("-c")
+        cmd.append("--c")
     
     print(f"Running: {' '.join(cmd)}")
     print(f"\nNote: Training may take several hours or days depending on:")
