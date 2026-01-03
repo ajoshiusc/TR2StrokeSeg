@@ -205,3 +205,22 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# nn-UNet specific
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
+nnUNet_trained_models/
+
+# Data directories
+data/
+datasets/
+predictions/
+results/
+
+# Large medical imaging files
+*.nii.gz
+*.nii
+*.nrrd
+*.mha
+*.mhd
