@@ -84,15 +84,38 @@ def prepare_atlas2_dataset(atlas2_dir, output_dir, dataset_id=1):
     print(f"Processing Atlas2 dataset from {atlas2_dir}")
     print(f"Output directory: {dataset_folder}")
     
-    # Find all subject folders in Training directory
+    # Find all subject folders. Atlas2 distributions sometimes place subjects
+    # directly under the provided root or under a `Training` folder. Be flexible
+    # and search for directories containing .nii.gz files up to two levels deep.
+    def find_subject_dirs(root: Path):
+        candidates = []
+        # level 1 dirs
+        for d in sorted([p for p in root.iterdir() if p.is_dir()]):
+            # if this dir contains nii files, consider it a subject folder
+            if any(d.glob('*.nii')) or any(d.glob('*.nii.gz')):
+                candidates.append(d)
+                continue
+            # otherwise check one level deeper
+            for sub in sorted([p for p in d.iterdir() if p.is_dir()]):
+                if any(sub.glob('*.nii')) or any(sub.glob('*.nii.gz')):
+                    candidates.append(sub)
+        return candidates
+
     training_dir = atlas2_dir / "Training"
-    if not training_dir.exists():
-        raise ValueError(f"Training directory not found: {training_dir}")
-    
-    subject_folders = sorted([d for d in training_dir.iterdir() if d.is_dir()])
-    
+    if training_dir.exists() and training_dir.is_dir():
+        subject_folders = find_subject_dirs(training_dir)
+    else:
+        subject_folders = find_subject_dirs(atlas2_dir)
+
     if len(subject_folders) == 0:
-        raise ValueError(f"No subject folders found in {training_dir}")
+        # as a last resort, look for any directory anywhere under atlas2_dir that
+        # contains nii files (depth-first search, limited depth)
+        for p in atlas2_dir.rglob('*'):
+            if p.is_dir() and (any(p.glob('*.nii')) or any(p.glob('*.nii.gz'))):
+                subject_folders.append(p)
+
+    if len(subject_folders) == 0:
+        raise ValueError(f"No subject folders with .nii(.gz) files found under: {atlas2_dir}")
     
     print(f"Found {len(subject_folders)} subjects")
     
