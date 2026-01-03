@@ -1,0 +1,23 @@
+# Configuration for Atlas2 dataset
+dataset:
+  name: "Atlas2"
+  id: 1
+  description: "Atlas2 stroke lesion segmentation dataset"
+  
+  # Data paths (modify these according to your setup)
+  raw_data_dir: "/path/to/atlas2/dataset"
+  nnunet_raw_dir: "/path/to/nnUNet_raw"
+  nnunet_preprocessed_dir: "/path/to/nnUNet_preprocessed"
+  nnunet_results_dir: "/path/to/nnUNet_results"
+
+# Training configuration
+training:
+  configuration: "3d_fullres"  # Options: 2d, 3d_fullres, 3d_lowres, 3d_cascade_fullres
+  trainer: "nnUNetTrainer"
+  folds: [0, 1, 2, 3, 4]  # 5-fold cross-validation
+  num_epochs: null  # null = use nn-UNet default (1000)
+  
+# Inference configuration
+inference:
+  use_folds: [0, 1, 2, 3, 4]  # Folds to use for ensemble prediction
+  checkpoint: "checkpoint_final.pth"  # or "checkpoint_best.pth"

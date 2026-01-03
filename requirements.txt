@@ -1,0 +1,17 @@
+# Core dependencies for nn-UNet training and inference
+nnunetv2>=2.2
+torch>=2.0.0
+numpy>=1.21.0
+nibabel>=3.2.0
+SimpleITK>=2.1.0
+scipy>=1.7.0
+scikit-learn>=1.0.0
+scikit-image>=0.19.0
+pandas>=1.3.0
+tqdm>=4.62.0
+matplotlib>=3.4.0
+batchgenerators>=0.25
+
+# Optional dependencies for data handling
+pillow>=8.3.0
+pydicom>=2.2.0
