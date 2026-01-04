@@ -67,7 +67,7 @@ def main():
     config = "3d_fullres"
     fold = 0
     checkpoint = "checkpoint_best.pth"
-    out_final = os.path.join(preproc_dir, "final_masks")
+    out_final = os.path.join(orig_dir, "final_masks_nnunet")
     os.makedirs(out_final, exist_ok=True)
 
     for mni_img in sorted(glob.glob(os.path.join(preproc_dir, "*_1mm.nii.gz"))):
