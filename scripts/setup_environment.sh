@@ -2,9 +2,9 @@
 # Setup script for nn-UNet environment variables
 
 # Modify these paths according to your setup
-export nnUNet_raw="/path/to/nnUNet_raw"
-export nnUNet_preprocessed="/path/to/nnUNet_preprocessed"
-export nnUNet_results="/path/to/nnUNet_results"
+export nnUNet_raw="/project2/ajoshi_1183/data/TR2/nnUNet_raw"
+export nnUNet_preprocessed="/project2/ajoshi_1183/data/TR2/nnUNet_preprocessed"
+export nnUNet_results="/project2/ajoshi_1183/data/TR2/nnUNet_results"
 
 # Create directories if they don't exist
 mkdir -p "$nnUNet_raw"
