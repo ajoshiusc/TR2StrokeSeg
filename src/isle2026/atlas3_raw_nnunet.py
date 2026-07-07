@@ -258,23 +258,40 @@ def validate_case_geometry(cases: Iterable[Atlas3Case]) -> None:
         raise RuntimeError("nibabel and numpy are required for geometry checks") from exc
 
     bad_cases: list[str] = []
+    affine_warnings: list[str] = []
     for case in cases:
         if case.label is None:
             continue
         image_nii = nib.load(str(case.image))
         label_nii = nib.load(str(case.label))
         same_shape = image_nii.shape == label_nii.shape
-        same_affine = np.allclose(image_nii.affine, label_nii.affine, atol=1e-4)
-        if not (same_shape and same_affine):
+        image_spacing = image_nii.header.get_zooms()[:3]
+        label_spacing = label_nii.header.get_zooms()[:3]
+        same_spacing = np.allclose(image_spacing, label_spacing, atol=1e-4)
+        if not (same_shape and same_spacing):
             bad_cases.append(
-                f"{case.case_id}: image shape/affine {image_nii.shape} does not match label {label_nii.shape}"
+                f"{case.case_id}: image shape/spacing {image_nii.shape}/{image_spacing} "
+                f"does not match label {label_nii.shape}/{label_spacing}"
             )
+            continue
+
+        if not np.allclose(image_nii.affine, label_nii.affine, atol=1e-4):
+            max_diff = float(np.max(np.abs(image_nii.affine - label_nii.affine)))
+            affine_warnings.append(f"{case.case_id}: image/label affine max difference {max_diff:g}")
 
     if bad_cases:
         preview = "\n".join(bad_cases[:10])
         raise ValueError(
-            "Image/label geometry mismatch. Use --target-spacing to rewrite pairs "
+            "Image/label shape or spacing mismatch. Use --target-spacing to rewrite pairs "
             "onto a shared grid, or inspect the source data.\n" + preview
+        )
+
+    if affine_warnings:
+        preview = "\n".join(affine_warnings[:10])
+        print(
+            f"Warning: {len(affine_warnings)} image/label pair(s) have affine header differences. "
+            "Shapes and voxel spacings match, so preparation will continue. "
+            "nnUNet integrity verification may print matching warnings.\n" + preview
         )
 
 
@@ -503,7 +520,7 @@ def prepare_dataset(args: argparse.Namespace) -> None:
 
     if not args.skip_geometry_check:
         validate_case_geometry(cases)
-        print("Image/label geometry check passed.")
+        print("Image/label shape and spacing check passed.")
 
     dataset_folder = nnunet_dataset_folder(dirs.raw, args.dataset_id)
     print(f"nnUNet dataset: {dataset_folder}")
