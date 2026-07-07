@@ -225,3 +225,6 @@ results/
 *.mha
 *.mhd
 *.csv
+*.npz
+*.pkl
+*.png
