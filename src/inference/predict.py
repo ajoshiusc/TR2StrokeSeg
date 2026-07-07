@@ -100,7 +100,8 @@ def run_inference(input_dir, output_dir, model_dir, dataset_id, configuration="3
         "-c", configuration,
         "-tr", trainer,
         "-f", folds,
-        "-chk", checkpoint
+        "-chk", checkpoint,
+        "-device", "cpu"
     ]
     
     print(f"Running: {' '.join(cmd)}")
