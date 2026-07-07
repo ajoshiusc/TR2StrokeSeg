@@ -228,3 +228,4 @@ results/
 *.npz
 *.pkl
 *.png
+*.json
