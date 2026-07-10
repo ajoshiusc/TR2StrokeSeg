@@ -1,0 +1,4 @@
+# Install the repository's core requirements first, then the MONAI dependency
+# required by the bundled diffusion network.
+-r ../../requirements.txt
+monai>=1.3.0,<2
