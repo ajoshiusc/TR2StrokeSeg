@@ -8,6 +8,7 @@ directory.  The following final images are all on the same 1 mm MNI grid:
 * BrainSuite skull-stripped T1;
 * BrainSuite skull-stripping (brain) mask;
 * nnU-Net stroke mask;
+* stroke mask dilated by 3 mm for inpainting;
 * full-head inpainted T1;
 * skull-stripped inpainted T1.
 
@@ -47,6 +48,9 @@ import run_sample_arc_stroke_pipeline as delineation  # noqa: E402
 import run_sample_arc_inpainting as inpainting  # noqa: E402
 
 
+LESION_DILATION_MM = 3.0
+
+
 @dataclass(frozen=True)
 class Case:
     index: int
@@ -77,6 +81,7 @@ class CaseFiles:
     brain_t1_mni: Path
     skullstrip_mask_mni: Path
     lesion_mask_mni: Path
+    dilated_lesion_mask_mni: Path
     inpainted_t1_mni: Path
     brain_inpainted_t1_mni: Path
     metadata_json: Path
@@ -254,6 +259,9 @@ def files_for_case(case: Case, output_dir: Path) -> CaseFiles:
         brain_t1_mni=case_dir / f"{case.case_id}_brain_mni_1mm.nii.gz",
         skullstrip_mask_mni=case_dir / f"{case.case_id}_skullstrip_mask_mni_1mm.nii.gz",
         lesion_mask_mni=case_dir / f"{case.case_id}_stroke_mask_mni_1mm.nii.gz",
+        dilated_lesion_mask_mni=(
+            case_dir / f"{case.case_id}_stroke_mask_dilated_3mm_mni_1mm.nii.gz"
+        ),
         inpainted_t1_mni=case_dir / f"{case.case_id}_inpainted_mni_1mm.nii.gz",
         brain_inpainted_t1_mni=case_dir / f"{case.case_id}_brain_inpainted_mni_1mm.nii.gz",
         metadata_json=case_dir / "processing_metadata.json",
@@ -482,6 +490,50 @@ def canonicalize_lesion_mask(files: CaseFiles) -> None:
     )
 
 
+def dilate_mask_mm(
+    mask: np.ndarray,
+    voxel_sizes: tuple[float, float, float],
+    radius_mm: float,
+) -> np.ndarray:
+    """Dilate a binary mask by a Euclidean radius in physical millimetres."""
+    mask = np.asarray(mask, dtype=bool)
+    if radius_mm <= 0 or not mask.any():
+        return mask.copy()
+    distance = distance_transform_edt(~mask, sampling=voxel_sizes)
+    return distance <= radius_mm
+
+
+def create_dilated_lesion_mask(files: CaseFiles, overwrite: bool) -> None:
+    if files.dilated_lesion_mask_mni.is_file() and not overwrite:
+        return
+
+    lesion_image = nib.load(files.lesion_mask_mni)
+    brain_mask_image = nib.load(files.skullstrip_mask_mni)
+    if lesion_image.shape != brain_mask_image.shape:
+        raise ValueError(f"{files.case.case_id}: lesion/brain-mask shape mismatch")
+    if not np.allclose(
+        lesion_image.affine, brain_mask_image.affine, atol=1e-4, rtol=1e-5
+    ):
+        raise ValueError(f"{files.case.case_id}: lesion/brain-mask affine mismatch")
+
+    lesion = np.asarray(lesion_image.dataobj) > 0
+    brain_mask = np.asarray(brain_mask_image.dataobj) > 0
+    voxel_sizes = tuple(
+        float(value) for value in lesion_image.header.get_zooms()[:3]
+    )
+    dilated = dilate_mask_mm(lesion, voxel_sizes, LESION_DILATION_MM)
+    # Do not replace extracranial full-head voxels. Preserve every original
+    # lesion voxel even if a skull-stripping edge excludes it.
+    dilated = lesion | (dilated & brain_mask)
+    inpainting.save_nifti(
+        dilated,
+        lesion_image.affine,
+        files.dilated_lesion_mask_mni,
+        np.uint8,
+        header=lesion_image.header,
+    )
+
+
 def delineate_subject(
     files: CaseFiles, args: argparse.Namespace, env: dict[str, str]
 ) -> None:
@@ -536,7 +588,7 @@ def delineate_subject(
 
 def prepare_inpainting_case(files: CaseFiles) -> inpainting.PreparedCase:
     brain_image = nib.load(files.brain_t1_mni)
-    lesion_image = nib.load(files.lesion_mask_mni)
+    lesion_image = nib.load(files.dilated_lesion_mask_mni)
     if brain_image.shape != lesion_image.shape:
         raise ValueError(f"{files.case.case_id}: brain/lesion shape mismatch")
     if not np.allclose(brain_image.affine, lesion_image.affine, atol=1e-4, rtol=1e-5):
@@ -586,7 +638,7 @@ def prepare_inpainting_case(files: CaseFiles) -> inpainting.PreparedCase:
         files.full_t1_mni,
         files.bse_brain_source,
         files.to_mni_mat,
-        files.lesion_mask_mni,
+        files.dilated_lesion_mask_mni,
     )
     return inpainting.PreparedCase(
         paths=inpainting_paths,
@@ -772,7 +824,8 @@ def save_subject_inpainting(
         ).dataobj,
         dtype=np.float32,
     )
-    lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
+    source_lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
+    lesion = np.asarray(nib.load(files.dilated_lesion_mask_mni).dataobj) > 0
     full = np.asarray(reference.dataobj, dtype=np.float32)
     brain = np.asarray(nib.load(files.brain_t1_mni).dataobj, dtype=np.float32)
     brain_mask = np.asarray(nib.load(files.skullstrip_mask_mni).dataobj) > 0
@@ -816,7 +869,8 @@ def save_subject_inpainting(
     stats: dict[str, float | int | bool] = {
         "histogram_peak": prepared.peak,
         "normalized_input_mean": float(prepared.model_image.mean()),
-        "source_lesion_voxels": int(lesion.sum()),
+        "source_lesion_voxels": int(source_lesion.sum()),
+        "dilated_lesion_voxels": int(lesion.sum()),
         "model_lesion_voxels": int(prepared.model_mask.sum()),
         "model_lesion_mean": float(model_output[prepared.model_mask > 0].mean()),
         "full_outside_lesion_max_abs_change": float(
@@ -840,6 +894,7 @@ def copy_empty_lesion_outputs(files: CaseFiles) -> dict[str, float | int | bool]
         "histogram_peak": 0.0,
         "normalized_input_mean": 0.0,
         "source_lesion_voxels": 0,
+        "dilated_lesion_voxels": 0,
         "model_lesion_voxels": 0,
         "model_lesion_mean": 0.0,
         "full_outside_lesion_max_abs_change": 0.0,
@@ -848,7 +903,8 @@ def copy_empty_lesion_outputs(files: CaseFiles) -> dict[str, float | int | bool]
 
 
 def collect_inpainting_stats(files: CaseFiles) -> dict[str, float | int | bool]:
-    lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
+    source_lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
+    lesion = np.asarray(nib.load(files.dilated_lesion_mask_mni).dataobj) > 0
     full = np.asarray(nib.load(files.full_t1_mni).dataobj, dtype=np.float32)
     brain = np.asarray(nib.load(files.brain_t1_mni).dataobj, dtype=np.float32)
     full_output = np.asarray(
@@ -860,7 +916,8 @@ def collect_inpainting_stats(files: CaseFiles) -> dict[str, float | int | bool]:
     peak = float(int(inpainting.histogram_peak(brain.copy())))
     stats: dict[str, float | int | bool] = {
         "histogram_peak": peak,
-        "source_lesion_voxels": int(lesion.sum()),
+        "source_lesion_voxels": int(source_lesion.sum()),
+        "dilated_lesion_voxels": int(lesion.sum()),
         "full_outside_lesion_max_abs_change": float(
             np.max(np.abs(full_output[~lesion] - full[~lesion]))
         ),
@@ -897,7 +954,7 @@ def collect_inpainting_stats(files: CaseFiles) -> dict[str, float | int | bool]:
 def validate_case(files: CaseFiles, stop_after: str) -> dict[str, object]:
     outputs = [files.full_t1_mni, files.brain_t1_mni, files.skullstrip_mask_mni]
     if stop_after in ("delineation", "inpainting"):
-        outputs.append(files.lesion_mask_mni)
+        outputs.extend([files.lesion_mask_mni, files.dilated_lesion_mask_mni])
     if stop_after == "inpainting":
         outputs.extend([files.inpainted_t1_mni, files.brain_inpainted_t1_mni])
     missing = [str(path) for path in outputs if not path.is_file()]
@@ -918,6 +975,13 @@ def validate_case(files: CaseFiles, stop_after: str) -> dict[str, object]:
         raise ValueError(f"{files.case.case_id}: final output geometry mismatch")
     if not finite:
         raise FloatingPointError(f"{files.case.case_id}: non-finite final image")
+    if stop_after in ("delineation", "inpainting"):
+        lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
+        dilated = np.asarray(nib.load(files.dilated_lesion_mask_mni).dataobj) > 0
+        if np.any(lesion & ~dilated):
+            raise ValueError(
+                f"{files.case.case_id}: dilated mask does not contain lesion mask"
+            )
     zooms = tuple(float(value) for value in reference.header.get_zooms()[:3])
     if not np.allclose(zooms, (1.0, 1.0, 1.0), atol=1e-3):
         raise ValueError(f"{files.case.case_id}: expected 1 mm MNI grid, got {zooms}")
@@ -937,6 +1001,9 @@ def validate_case(files: CaseFiles, stop_after: str) -> dict[str, object]:
         "skullstrip_mask_mni": str(files.skullstrip_mask_mni),
         "lesion_mask_mni": str(files.lesion_mask_mni)
         if files.lesion_mask_mni.is_file()
+        else "",
+        "dilated_lesion_mask_mni": str(files.dilated_lesion_mask_mni)
+        if files.dilated_lesion_mask_mni.is_file()
         else "",
         "inpainted_t1_mni": str(files.inpainted_t1_mni)
         if files.inpainted_t1_mni.is_file()
@@ -972,6 +1039,8 @@ def write_case_metadata(
         "seed": args.seed + files.case.index,
         "intensity_match": args.intensity_match,
         "intensity_match_ring_mm": args.intensity_match_ring_mm,
+        "lesion_dilation_mm": LESION_DILATION_MM,
+        "dilation_growth_constrained_to_brain": True,
         "inpainting": inpainting_stats or {},
     }
     with files.metadata_json.open("w") as handle:
@@ -1099,6 +1168,23 @@ def resolve_inpainting_dtype(args: argparse.Namespace) -> tuple[torch.device, to
     return device, dtype
 
 
+def inpainting_outputs_current(files: CaseFiles) -> bool:
+    required = (
+        files.dilated_lesion_mask_mni,
+        files.inpainted_t1_mni,
+        files.brain_inpainted_t1_mni,
+        files.metadata_json,
+    )
+    if not all(path.is_file() for path in required):
+        return False
+    try:
+        with files.metadata_json.open() as handle:
+            metadata = json.load(handle)
+        return float(metadata.get("lesion_dilation_mm")) == LESION_DILATION_MM
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
 def process_case(
     files: CaseFiles,
     args: argparse.Namespace,
@@ -1120,6 +1206,14 @@ def process_case(
 
     print(f"[{number}/{total}] {case.case_id}: stroke delineation", flush=True)
     delineate_subject(files, args, env)
+    if args.dry_run:
+        print(
+            f"Would dilate {files.lesion_mask_mni} by {LESION_DILATION_MM:g} mm "
+            f"-> {files.dilated_lesion_mask_mni}",
+            flush=True,
+        )
+    else:
+        create_dilated_lesion_mask(files, args.overwrite)
     if args.stop_after == "delineation":
         if args.dry_run:
             return None, model
@@ -1129,15 +1223,13 @@ def process_case(
     print(f"[{number}/{total}] {case.case_id}: inpainting", flush=True)
     if args.dry_run:
         print(
-            f"Would inpaint {files.lesion_mask_mni} -> {files.inpainted_t1_mni}",
+            f"Would inpaint {files.dilated_lesion_mask_mni} "
+            f"-> {files.inpainted_t1_mni}",
             flush=True,
         )
         return None, model
 
-    inpainting_complete = (
-        files.inpainted_t1_mni.is_file()
-        and files.brain_inpainted_t1_mni.is_file()
-    )
+    inpainting_complete = inpainting_outputs_current(files)
     stats: dict[str, float | int | bool] | None = None
     if args.overwrite or not inpainting_complete:
         lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
