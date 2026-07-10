@@ -27,6 +27,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,11 +80,11 @@ class CaseFiles:
     inpainted_t1_mni: Path
     brain_inpainted_t1_mni: Path
     metadata_json: Path
+    error_json: Path
 
 
 def parse_args() -> argparse.Namespace:
-    default_input = Path("/home/ajoshi/Desktop/sample_arc")
-    default_output = ANALYSIS_ROOT / "outputs" / "subjectwise_stroke_inpainting"
+    default_input = Path("/deneb_disk/ARC")
     default_mni = delineation.first_existing(delineation.MNI_TEMPLATE_CANDIDATES)
     default_results = delineation.first_existing(delineation.NNUNET_RESULTS_CANDIDATES)
     default_fsl = delineation.first_existing(delineation.FSL_BIN_CANDIDATES)
@@ -92,9 +93,21 @@ def parse_args() -> argparse.Namespace:
         "nnUNetv2_predict", delineation.NNUNET_PREDICT_CANDIDATES
     )
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "With no input/output arguments, process every T1w scan under "
+            "/deneb_disk/ARC and write to "
+            "/deneb_disk/ARC/derivatives/stroke_inpainting."
+        ),
+    )
     parser.add_argument("--input-root", type=Path, default=default_input)
-    parser.add_argument("--output-dir", type=Path, default=default_output)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Default: <input-root>/derivatives/stroke_inpainting",
+    )
     parser.add_argument("--modality", default="T1w")
     parser.add_argument(
         "--case-glob",
@@ -168,6 +181,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop on the first failed scan instead of recording it and continuing",
+    )
     return parser.parse_args()
 
 
@@ -209,7 +227,9 @@ def discover_cases(args: argparse.Namespace) -> list[Case]:
 
 
 def files_for_case(case: Case, output_dir: Path) -> CaseFiles:
-    case_dir = output_dir / case.case_id
+    # Keep all sessions underneath their BIDS subject, and retain a final scan
+    # level because a small number of ARC sessions contain multiple T1w runs.
+    case_dir = output_dir / case.subject / case.session / case.case_id
     work = case_dir / "work"
     nn_input_dir = work / "nnunet_input"
     nn_prediction_dir = work / "nnunet_prediction"
@@ -237,6 +257,7 @@ def files_for_case(case: Case, output_dir: Path) -> CaseFiles:
         inpainted_t1_mni=case_dir / f"{case.case_id}_inpainted_mni_1mm.nii.gz",
         brain_inpainted_t1_mni=case_dir / f"{case.case_id}_brain_inpainted_mni_1mm.nii.gz",
         metadata_json=case_dir / "processing_metadata.json",
+        error_json=case_dir / "processing_error.json",
     )
 
 
@@ -961,7 +982,7 @@ def write_case_metadata(
 
 def write_global_manifest(rows: list[dict[str, object]], output_dir: Path) -> None:
     by_case: dict[str, dict[str, object]] = {}
-    for metadata_path in sorted(output_dir.glob("*/processing_metadata.json")):
+    for metadata_path in sorted(output_dir.rglob("processing_metadata.json")):
         with metadata_path.open() as handle:
             metadata = json.load(handle)
         case_id = metadata.get("case_id")
@@ -989,6 +1010,52 @@ def write_global_manifest(rows: list[dict[str, object]], output_dir: Path) -> No
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(flattened)
+
+
+def write_case_error(files: CaseFiles, error: Exception) -> None:
+    files.case_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "case_id": files.case.case_id,
+        "subject": files.case.subject,
+        "session": files.case.session,
+        "source_path": str(files.case.source_path),
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "traceback": traceback.format_exc(),
+    }
+    with files.error_json.open("w") as handle:
+        json.dump(record, handle, indent=2)
+        handle.write("\n")
+
+
+def clear_case_error(files: CaseFiles) -> None:
+    if files.error_json.is_file():
+        files.error_json.unlink()
+
+
+def write_failure_manifest(output_dir: Path) -> None:
+    records: list[dict[str, object]] = []
+    for error_path in sorted(output_dir.rglob("processing_error.json")):
+        with error_path.open() as handle:
+            record = json.load(handle)
+        record.pop("traceback", None)
+        records.append(record)
+
+    manifest = output_dir / "failures.csv"
+    if not records:
+        if manifest.is_file():
+            manifest.unlink()
+        return
+
+    fieldnames: list[str] = []
+    for record in records:
+        for key in record:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with manifest.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
 
 
 def resolve_nnunet_device(args: argparse.Namespace) -> str:
@@ -1032,9 +1099,94 @@ def resolve_inpainting_dtype(args: argparse.Namespace) -> tuple[torch.device, to
     return device, dtype
 
 
+def process_case(
+    files: CaseFiles,
+    args: argparse.Namespace,
+    env: dict[str, str],
+    model: torch.nn.Module | None,
+    device: torch.device | None,
+    dtype: torch.dtype | None,
+    number: int,
+    total: int,
+) -> tuple[dict[str, object] | None, torch.nn.Module | None]:
+    case = files.case
+    print(f"\n[{number}/{total}] {case.case_id}: preprocessing", flush=True)
+    preprocess_subject(files, args, env)
+    if args.stop_after == "preprocessing":
+        if args.dry_run:
+            return None, model
+        validation = validate_case(files, args.stop_after)
+        return write_case_metadata(files, args, validation, None), model
+
+    print(f"[{number}/{total}] {case.case_id}: stroke delineation", flush=True)
+    delineate_subject(files, args, env)
+    if args.stop_after == "delineation":
+        if args.dry_run:
+            return None, model
+        validation = validate_case(files, args.stop_after)
+        return write_case_metadata(files, args, validation, None), model
+
+    print(f"[{number}/{total}] {case.case_id}: inpainting", flush=True)
+    if args.dry_run:
+        print(
+            f"Would inpaint {files.lesion_mask_mni} -> {files.inpainted_t1_mni}",
+            flush=True,
+        )
+        return None, model
+
+    inpainting_complete = (
+        files.inpainted_t1_mni.is_file()
+        and files.brain_inpainted_t1_mni.is_file()
+    )
+    stats: dict[str, float | int | bool] | None = None
+    if args.overwrite or not inpainting_complete:
+        lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
+        if not lesion.any():
+            stats = copy_empty_lesion_outputs(files)
+            print(f"[{case.case_id}] empty lesion mask; copied input T1s", flush=True)
+        else:
+            prepared = prepare_inpainting_case(files)
+            if model is None:
+                assert device is not None and dtype is not None
+                model = inpainting.load_model(
+                    args.inpainting_checkpoint, device, dtype
+                )
+            assert device is not None and dtype is not None
+            result = inpainting.inpaint_batch(
+                [prepared],
+                model,
+                device,
+                dtype,
+                args.inpainting_steps,
+                args.seed + case.index,
+            )[0]
+            stats = save_subject_inpainting(
+                files,
+                prepared,
+                result,
+                args.intensity_match,
+                args.intensity_match_ring_mm,
+            )
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+    else:
+        if files.metadata_json.is_file():
+            with files.metadata_json.open() as handle:
+                previous_metadata = json.load(handle)
+            previous_stats = previous_metadata.get("inpainting")
+            stats = previous_stats if isinstance(previous_stats, dict) else None
+        if stats is None:
+            stats = collect_inpainting_stats(files)
+
+    validation = validate_case(files, args.stop_after)
+    return write_case_metadata(files, args, validation, stats), model
+
+
 def main() -> int:
     args = parse_args()
     args.input_root = args.input_root.resolve()
+    if args.output_dir is None:
+        args.output_dir = args.input_root / "derivatives" / "stroke_inpainting"
     args.output_dir = args.output_dir.resolve()
     args.mni_template = args.mni_template.resolve() if args.mni_template else None
     args.fsl_bin = args.fsl_bin.resolve() if args.fsl_bin else None
@@ -1062,90 +1214,66 @@ def main() -> int:
     )
     device: torch.device | None = None
     dtype: torch.dtype | None = None
-    model = None
+    model: torch.nn.Module | None = None
     if args.stop_after == "inpainting" and not args.dry_run:
         device, dtype = resolve_inpainting_dtype(args)
 
-    print(f"Found {len(cases)} case(s)", flush=True)
+    subject_count = len({case.subject for case in cases})
+    session_count = len({(case.subject, case.session) for case in cases})
+    print(
+        f"Found {len(cases)} T1w scan(s) across {subject_count} subject(s) "
+        f"and {session_count} session(s)",
+        flush=True,
+    )
     print(f"Output root: {args.output_dir}", flush=True)
     rows: list[dict[str, object]] = []
+    failures = 0
     for number, case in enumerate(cases, start=1):
         files = files_for_case(case, args.output_dir)
-        print(f"\n[{number}/{len(cases)}] {case.case_id}: preprocessing", flush=True)
-        preprocess_subject(files, args, env)
-        if args.stop_after == "preprocessing":
+        try:
+            row, model = process_case(
+                files,
+                args,
+                env,
+                model,
+                device,
+                dtype,
+                number,
+                len(cases),
+            )
             if not args.dry_run:
-                validation = validate_case(files, args.stop_after)
-                rows.append(write_case_metadata(files, args, validation, None))
-                write_global_manifest(rows, args.output_dir)
-            continue
-
-        print(f"[{number}/{len(cases)}] {case.case_id}: stroke delineation", flush=True)
-        delineate_subject(files, args, env)
-        if args.stop_after == "delineation":
-            if not args.dry_run:
-                validation = validate_case(files, args.stop_after)
-                rows.append(write_case_metadata(files, args, validation, None))
-                write_global_manifest(rows, args.output_dir)
-            continue
-
-        print(f"[{number}/{len(cases)}] {case.case_id}: inpainting", flush=True)
-        if args.dry_run:
+                clear_case_error(files)
+                if row is not None:
+                    rows.append(row)
+                    write_global_manifest(rows, args.output_dir)
+                write_failure_manifest(args.output_dir)
+        except Exception as error:
+            failures += 1
             print(
-                f"Would inpaint {files.lesion_mask_mni} -> {files.inpainted_t1_mni}",
+                f"[{number}/{len(cases)}] {case.case_id} FAILED: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
                 flush=True,
             )
-            continue
-        inpainting_complete = (
-            files.inpainted_t1_mni.is_file()
-            and files.brain_inpainted_t1_mni.is_file()
-        )
-        stats: dict[str, float | int | bool] | None = None
-        if args.overwrite or not inpainting_complete:
-            lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
-            if not lesion.any():
-                stats = copy_empty_lesion_outputs(files)
-                print(f"[{case.case_id}] empty lesion mask; copied input T1s", flush=True)
-            else:
-                prepared = prepare_inpainting_case(files)
-                if model is None:
-                    assert device is not None and dtype is not None
-                    model = inpainting.load_model(
-                        args.inpainting_checkpoint, device, dtype
-                    )
-                assert device is not None and dtype is not None
-                result = inpainting.inpaint_batch(
-                    [prepared],
-                    model,
-                    device,
-                    dtype,
-                    args.inpainting_steps,
-                    args.seed + case.index,
-                )[0]
-                stats = save_subject_inpainting(
-                    files,
-                    prepared,
-                    result,
-                    args.intensity_match,
-                    args.intensity_match_ring_mm,
-                )
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
-        else:
-            if files.metadata_json.is_file():
-                with files.metadata_json.open() as handle:
-                    previous_metadata = json.load(handle)
-                previous_stats = previous_metadata.get("inpainting")
-                stats = previous_stats if isinstance(previous_stats, dict) else None
-            if stats is None:
-                stats = collect_inpainting_stats(files)
-        validation = validate_case(files, args.stop_after)
-        rows.append(write_case_metadata(files, args, validation, stats))
-        write_global_manifest(rows, args.output_dir)
+            if not args.dry_run:
+                write_case_error(files, error)
+                write_failure_manifest(args.output_dir)
+            if args.fail_fast:
+                raise
+            if device is not None and device.type == "cuda":
+                torch.cuda.empty_cache()
 
     print("\nSubjectwise processing complete", flush=True)
     if not args.dry_run:
         print(f"Manifest: {args.output_dir / 'manifest.csv'}", flush=True)
+        if failures:
+            print(f"Failures: {args.output_dir / 'failures.csv'}", flush=True)
+    if failures:
+        print(
+            f"{failures} scan(s) failed; all remaining scans were attempted",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
