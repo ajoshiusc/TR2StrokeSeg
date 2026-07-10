@@ -49,6 +49,9 @@ import run_sample_arc_inpainting as inpainting  # noqa: E402
 
 
 LESION_DILATION_MM = 3.0
+INTENSITY_HARMONIZATION_VERSION = "boundary_quantile_feather_v3"
+BOUNDARY_FEATHER_MM = 3.0
+BOUNDARY_QUANTILES = np.asarray((0.02, 0.10, 0.25, 0.50, 0.75, 0.90, 0.98))
 
 
 @dataclass(frozen=True)
@@ -654,6 +657,137 @@ def prepare_inpainting_case(files: CaseFiles) -> inpainting.PreparedCase:
     )
 
 
+def robust_affine_fit(
+    source: np.ndarray,
+    target: np.ndarray,
+    enabled: bool,
+    minimum_samples: int = 100,
+) -> tuple[float, float, float, float, bool]:
+    """Choose identity, offset-only, or a trimmed affine intensity mapping."""
+    source = np.asarray(source, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    valid = np.isfinite(source) & np.isfinite(target) & (source > 0) & (target > 0)
+    source = source[valid]
+    target = target[valid]
+    if source.size:
+        before_mae = float(np.median(np.abs(source - target)))
+    else:
+        before_mae = float("nan")
+    if not enabled or source.size < minimum_samples:
+        return 1.0, 0.0, before_mae, before_mae, False
+
+    source_bounds = np.quantile(source, (0.01, 0.99))
+    target_bounds = np.quantile(target, (0.01, 0.99))
+    keep = (
+        (source >= source_bounds[0])
+        & (source <= source_bounds[1])
+        & (target >= target_bounds[0])
+        & (target <= target_bounds[1])
+    )
+    fit_source = source[keep]
+    fit_target = target[keep]
+    affine_scale = 1.0
+    affine_offset = 0.0
+    for _ in range(3):
+        source_centered = fit_source - fit_source.mean()
+        variance = float(np.dot(source_centered, source_centered))
+        if variance <= 1e-6:
+            break
+        target_centered = fit_target - fit_target.mean()
+        affine_scale = float(
+            np.clip(
+                np.dot(source_centered, target_centered) / variance,
+                0.5,
+                2.0,
+            )
+        )
+        affine_offset = float(np.median(fit_target - affine_scale * fit_source))
+        residual = fit_target - (affine_scale * fit_source + affine_offset)
+        residual_center = float(np.median(residual))
+        mad = float(np.median(np.abs(residual - residual_center)))
+        if mad <= 1e-6:
+            break
+        inliers = np.abs(residual - residual_center) <= 3.0 * 1.4826 * mad
+        if int(inliers.sum()) < minimum_samples or bool(inliers.all()):
+            break
+        fit_source = fit_source[inliers]
+        fit_target = fit_target[inliers]
+
+    affine_offset = float(np.median(target - affine_scale * source))
+    candidates = (
+        (1.0, 0.0),
+        (1.0, float(np.median(target - source))),
+        (affine_scale, affine_offset),
+    )
+    errors = [
+        float(np.median(np.abs(scale * source + offset - target)))
+        for scale, offset in candidates
+    ]
+    best = int(np.argmin(errors))
+    scale, offset = candidates[best]
+    applied = not np.isclose(scale, 1.0, atol=1e-4) or not np.isclose(
+        offset, 0.0, atol=1e-3
+    )
+    return scale, offset, before_mae, errors[best], bool(applied)
+
+
+def monotonic_quantile_transfer(
+    values: np.ndarray,
+    source_samples: np.ndarray,
+    target_samples: np.ndarray,
+    enabled: bool,
+    minimum_samples: int = 100,
+) -> tuple[np.ndarray, bool]:
+    """Map an intensity distribution with monotonic piecewise-linear quantiles."""
+    values = np.asarray(values, dtype=np.float32)
+    source_samples = np.asarray(source_samples, dtype=np.float64)
+    target_samples = np.asarray(target_samples, dtype=np.float64)
+    valid = (
+        np.isfinite(source_samples)
+        & np.isfinite(target_samples)
+        & (source_samples > 0)
+        & (target_samples > 0)
+    )
+    source_samples = source_samples[valid]
+    target_samples = target_samples[valid]
+    if not enabled or source_samples.size < minimum_samples:
+        return values.copy(), False
+
+    source_knots = np.quantile(source_samples, BOUNDARY_QUANTILES)
+    target_knots = np.quantile(target_samples, BOUNDARY_QUANTILES)
+    source_knots, unique_indices = np.unique(source_knots, return_index=True)
+    target_knots = target_knots[unique_indices]
+    if source_knots.size < 2:
+        return values.copy(), False
+
+    mapped = np.interp(values, source_knots, target_knots).astype(np.float32)
+    low_slope = float(
+        np.clip(
+            (target_knots[1] - target_knots[0])
+            / (source_knots[1] - source_knots[0]),
+            0.25,
+            4.0,
+        )
+    )
+    high_slope = float(
+        np.clip(
+            (target_knots[-1] - target_knots[-2])
+            / (source_knots[-1] - source_knots[-2]),
+            0.25,
+            4.0,
+        )
+    )
+    below = values < source_knots[0]
+    above = values > source_knots[-1]
+    mapped[below] = (
+        target_knots[0] + low_slope * (values[below] - source_knots[0])
+    )
+    mapped[above] = (
+        target_knots[-1] + high_slope * (values[above] - source_knots[-1])
+    )
+    return mapped, True
+
+
 def harmonize_generated_intensity(
     generated: np.ndarray,
     target: np.ndarray,
@@ -663,89 +797,116 @@ def harmonize_generated_intensity(
     ring_width_mm: float,
     enabled: bool,
 ) -> tuple[np.ndarray, dict[str, float | int | bool]]:
-    """Match generated intensity scale/offset to normal tissue around a lesion.
+    """Reverse model scaling and match generated tissue at the lesion boundary.
 
-    An iteratively trimmed paired regression provides a robust affine mapping.
-    The fit is estimated outside the lesion, so pathological lesion intensities
-    never influence it. Only generated lesion voxels are later inserted.
+    First, paired known voxels outside the mask correct small errors introduced
+    by normalization inversion and 2-to-1 mm interpolation. Second, generated
+    voxels just inside the mask are mapped to their nearest real voxels outside
+    the mask. A narrow physical-space feather removes the remaining hard edge.
     """
+    lesion = np.asarray(lesion, dtype=bool)
+    brain_mask = np.asarray(brain_mask, dtype=bool)
     outside_distance = distance_transform_edt(~lesion, sampling=voxel_sizes)
-    ring = (
+    known_ring = (
         (outside_distance > 0)
         & (outside_distance <= ring_width_mm)
         & brain_mask
         & np.isfinite(generated)
         & np.isfinite(target)
     )
-    generated_ring = np.asarray(generated[ring], dtype=np.float64)
-    target_ring = np.asarray(target[ring], dtype=np.float64)
-    valid = (generated_ring > 0) & (target_ring > 0)
-    generated_ring = generated_ring[valid]
-    target_ring = target_ring[valid]
+    known_generated = np.asarray(generated[known_ring], dtype=np.float64)
+    known_target = np.asarray(target[known_ring], dtype=np.float64)
+    known_valid = (known_generated > 0) & (known_target > 0)
+    known_generated = known_generated[known_valid]
+    known_target = known_target[known_valid]
+    (
+        inverse_scale,
+        inverse_offset,
+        inverse_error_before,
+        inverse_error_after,
+        inverse_applied,
+    ) = robust_affine_fit(known_generated, known_target, enabled)
+    calibrated = np.asarray(
+        generated * inverse_scale + inverse_offset, dtype=np.float32
+    )
 
-    scale = 1.0
-    offset = 0.0
-    matched = False
-    if enabled and generated_ring.size >= 100:
-        fit_generated = generated_ring
-        fit_target = target_ring
-        generated_bounds = np.quantile(fit_generated, (0.01, 0.99))
-        target_bounds = np.quantile(fit_target, (0.01, 0.99))
-        keep = (
-            (fit_generated >= generated_bounds[0])
-            & (fit_generated <= generated_bounds[1])
-            & (fit_target >= target_bounds[0])
-            & (fit_target <= target_bounds[1])
+    inside_distance, nearest_outside = distance_transform_edt(
+        lesion,
+        sampling=voxel_sizes,
+        return_distances=True,
+        return_indices=True,
+    )
+    inner_shell = (
+        lesion
+        & (inside_distance <= BOUNDARY_FEATHER_MM)
+        & brain_mask
+        & np.isfinite(calibrated)
+    )
+    shell_flat = np.flatnonzero(inner_shell)
+    if shell_flat.size:
+        nearest_flat = np.ravel_multi_index(
+            tuple(axis[inner_shell] for axis in nearest_outside), target.shape
         )
-        fit_generated = fit_generated[keep]
-        fit_target = fit_target[keep]
-        for _ in range(3):
-            generated_centered = fit_generated - fit_generated.mean()
-            variance = float(np.dot(generated_centered, generated_centered))
-            if variance <= 1e-6:
-                break
-            target_centered = fit_target - fit_target.mean()
-            scale = float(
-                np.clip(
-                    np.dot(generated_centered, target_centered) / variance,
-                    0.5,
-                    2.0,
-                )
-            )
-            offset = float(np.median(fit_target - scale * fit_generated))
-            residual = fit_target - (scale * fit_generated + offset)
-            residual_center = float(np.median(residual))
-            mad = float(np.median(np.abs(residual - residual_center)))
-            if mad <= 1e-6:
-                break
-            inliers = np.abs(residual - residual_center) <= 3.0 * 1.4826 * mad
-            if int(inliers.sum()) < 100 or bool(inliers.all()):
-                break
-            fit_generated = fit_generated[inliers]
-            fit_target = fit_target[inliers]
-        offset = float(np.median(target_ring - scale * generated_ring))
-        candidate_parameters = [
-            (1.0, 0.0),
-            (1.0, float(np.median(target_ring - generated_ring))),
-            (scale, offset),
-        ]
-        candidate_errors = [
-            float(
-                np.median(
-                    np.abs(
-                        candidate_scale * generated_ring
-                        + candidate_offset
-                        - target_ring
-                    )
-                )
-            )
-            for candidate_scale, candidate_offset in candidate_parameters
-        ]
-        best = int(np.argmin(candidate_errors))
-        scale, offset = candidate_parameters[best]
-        matched = True
+        nearest_target = np.asarray(target.flat[nearest_flat], dtype=np.float64)
+        nearest_is_brain = np.asarray(brain_mask.flat[nearest_flat], dtype=bool)
+        boundary_generated = np.asarray(calibrated.flat[shell_flat], dtype=np.float64)
+        boundary_valid = (
+            nearest_is_brain
+            & np.isfinite(nearest_target)
+            & (nearest_target > 0)
+            & np.isfinite(boundary_generated)
+            & (boundary_generated > 0)
+        )
+    else:
+        nearest_target = np.empty(0, dtype=np.float64)
+        boundary_generated = np.empty(0, dtype=np.float64)
+        boundary_valid = np.empty(0, dtype=bool)
 
-    corrected = np.asarray(generated * scale + offset, dtype=np.float32)
+    boundary_source = boundary_generated[boundary_valid]
+    boundary_target = nearest_target[boundary_valid]
+    (
+        boundary_scale,
+        boundary_offset,
+        boundary_error_before,
+        _,
+        boundary_applied,
+    ) = robust_affine_fit(boundary_source, boundary_target, enabled)
+    corrected = np.asarray(
+        calibrated * boundary_scale + boundary_offset, dtype=np.float32
+    )
+
+    affine_boundary = np.asarray(
+        corrected.flat[shell_flat[boundary_valid]], dtype=np.float64
+    )
+    transfer_mask = (
+        lesion & brain_mask & np.isfinite(corrected) & (corrected > 0)
+    )
+    transferred_values, quantile_applied = monotonic_quantile_transfer(
+        corrected[transfer_mask],
+        affine_boundary,
+        boundary_target,
+        enabled,
+    )
+    corrected[transfer_mask] = transferred_values
+
+    feather_applied = False
+    if enabled and bool(boundary_valid.any()):
+        valid_shell_flat = shell_flat[boundary_valid]
+        shell_distance = np.asarray(
+            inside_distance.flat[valid_shell_flat], dtype=np.float32
+        )
+        generated_weight = np.clip(
+            shell_distance / BOUNDARY_FEATHER_MM, 0.0, 1.0
+        )
+        corrected_boundary = np.asarray(
+            corrected.flat[valid_shell_flat], dtype=np.float32
+        )
+        corrected.flat[valid_shell_flat] = (
+            generated_weight * corrected_boundary
+            + (1.0 - generated_weight) * boundary_target.astype(np.float32)
+        )
+        feather_applied = True
+
     tissue = np.asarray(
         target[brain_mask & np.isfinite(target) & (target >= 0)], dtype=np.float64
     )
@@ -758,29 +919,114 @@ def harmonize_generated_intensity(
         lower = float("nan")
         upper = float("nan")
 
-    corrected_ring = np.asarray(corrected[ring], dtype=np.float64)[valid]
-    before_mae = (
-        float(np.median(np.abs(generated_ring - target_ring)))
-        if generated_ring.size
-        else float("nan")
-    )
-    after_mae = (
-        float(np.median(np.abs(corrected_ring - target_ring)))
-        if corrected_ring.size
-        else float("nan")
-    )
+    if bool(boundary_valid.any()):
+        valid_shell_flat = shell_flat[boundary_valid]
+        final_boundary = np.asarray(
+            corrected.flat[valid_shell_flat], dtype=np.float64
+        )
+        boundary_error_after = float(
+            np.median(np.abs(final_boundary - boundary_target))
+        )
+        boundary_ratio_before = float(
+            np.median(boundary_source) / np.median(boundary_target)
+        )
+        boundary_ratio_after = float(
+            np.median(final_boundary) / np.median(boundary_target)
+        )
+        boundary_p75_ratio_before = float(
+            np.quantile(boundary_source, 0.75)
+            / np.quantile(boundary_target, 0.75)
+        )
+        boundary_p75_ratio_after = float(
+            np.quantile(final_boundary, 0.75)
+            / np.quantile(boundary_target, 0.75)
+        )
+        boundary_p90_ratio_before = float(
+            np.quantile(boundary_source, 0.90)
+            / np.quantile(boundary_target, 0.90)
+        )
+        boundary_p90_ratio_after = float(
+            np.quantile(final_boundary, 0.90)
+            / np.quantile(boundary_target, 0.90)
+        )
+    else:
+        boundary_error_after = float("nan")
+        boundary_ratio_before = float("nan")
+        boundary_ratio_after = float("nan")
+        boundary_p75_ratio_before = float("nan")
+        boundary_p75_ratio_after = float("nan")
+        boundary_p90_ratio_before = float("nan")
+        boundary_p90_ratio_after = float("nan")
+
+    total_scale = inverse_scale * boundary_scale
+    total_offset = inverse_offset * boundary_scale + boundary_offset
     stats: dict[str, float | int | bool] = {
         "intensity_match_enabled": enabled,
-        "intensity_match_applied": matched,
-        "intensity_match_ring_voxels": int(generated_ring.size),
-        "intensity_scale": scale,
-        "intensity_offset": offset,
-        "ring_median_abs_error_before": before_mae,
-        "ring_median_abs_error_after": after_mae,
+        "intensity_match_applied": bool(
+            inverse_applied
+            or boundary_applied
+            or quantile_applied
+            or feather_applied
+        ),
+        "intensity_harmonization_version": INTENSITY_HARMONIZATION_VERSION,
+        "intensity_match_ring_voxels": int(known_generated.size),
+        "intensity_scale": total_scale,
+        "intensity_offset": total_offset,
+        "inverse_scale": inverse_scale,
+        "inverse_offset": inverse_offset,
+        "ring_median_abs_error_before": inverse_error_before,
+        "ring_median_abs_error_after": inverse_error_after,
+        "boundary_match_voxels": int(boundary_source.size),
+        "boundary_scale": boundary_scale,
+        "boundary_offset": boundary_offset,
+        "boundary_median_abs_error_before": boundary_error_before,
+        "boundary_median_abs_error_after": boundary_error_after,
+        "boundary_median_ratio_before": boundary_ratio_before,
+        "boundary_median_ratio_after": boundary_ratio_after,
+        "boundary_p75_ratio_before": boundary_p75_ratio_before,
+        "boundary_p75_ratio_after": boundary_p75_ratio_after,
+        "boundary_p90_ratio_before": boundary_p90_ratio_before,
+        "boundary_p90_ratio_after": boundary_p90_ratio_after,
+        "boundary_quantile_transfer_applied": quantile_applied,
+        "boundary_feather_mm": BOUNDARY_FEATHER_MM,
         "intensity_clip_lower": lower,
         "intensity_clip_upper": upper,
     }
     return corrected, stats
+
+
+def validate_boundary_harmonization(
+    case_id: str,
+    output_name: str,
+    stats: dict[str, float | int | bool],
+    enabled: bool,
+) -> None:
+    if not enabled or int(stats["boundary_match_voxels"]) < 100:
+        return
+    before = float(stats["boundary_median_abs_error_before"])
+    after = float(stats["boundary_median_abs_error_after"])
+    ratio = float(stats["boundary_median_ratio_after"])
+    p75_ratio = float(stats["boundary_p75_ratio_after"])
+    p90_ratio = float(stats["boundary_p90_ratio_after"])
+    if not np.isfinite((before, after, ratio, p75_ratio, p90_ratio)).all():
+        raise FloatingPointError(
+            f"{case_id}: non-finite {output_name} boundary intensity QC"
+        )
+    if after > before + 1e-3:
+        raise ValueError(
+            f"{case_id}: {output_name} boundary matching worsened median error "
+            f"from {before:.3f} to {after:.3f}"
+        )
+    if not 0.70 <= ratio <= 1.30:
+        raise ValueError(
+            f"{case_id}: {output_name} inpainted/target boundary median ratio "
+            f"{ratio:.3f} is outside 0.70-1.30"
+        )
+    if not 0.85 <= p75_ratio <= 1.15 or not 0.85 <= p90_ratio <= 1.15:
+        raise ValueError(
+            f"{case_id}: {output_name} bright-tissue boundary ratios "
+            f"p75={p75_ratio:.3f}, p90={p90_ratio:.3f} are outside 0.85-1.15"
+        )
 
 
 def save_subject_inpainting(
@@ -847,6 +1093,12 @@ def save_subject_inpainting(
         voxel_sizes,
         intensity_match_ring_mm,
         intensity_match,
+    )
+    validate_boundary_harmonization(
+        files.case.case_id, "full-head", full_match_stats, intensity_match
+    )
+    validate_boundary_harmonization(
+        files.case.case_id, "brain", brain_match_stats, intensity_match
     )
     full_inpainted = full.copy()
     brain_inpainted = brain.copy()
@@ -1039,6 +1291,11 @@ def write_case_metadata(
         "seed": args.seed + files.case.index,
         "intensity_match": args.intensity_match,
         "intensity_match_ring_mm": args.intensity_match_ring_mm,
+        "intensity_harmonization_version": INTENSITY_HARMONIZATION_VERSION,
+        "boundary_feather_mm": BOUNDARY_FEATHER_MM,
+        "model_intensity_normalization": "divide_by_integer_histogram_peak",
+        "model_intensity_denormalization": "multiply_by_same_histogram_peak",
+        "output_intensity_domain": "N4_bias_corrected_MNI_T1",
         "lesion_dilation_mm": LESION_DILATION_MM,
         "dilation_growth_constrained_to_brain": True,
         "inpainting": inpainting_stats or {},
@@ -1168,8 +1425,12 @@ def resolve_inpainting_dtype(args: argparse.Namespace) -> tuple[torch.device, to
     return device, dtype
 
 
-def inpainting_outputs_current(files: CaseFiles) -> bool:
+def inpainting_outputs_current(files: CaseFiles, args: argparse.Namespace) -> bool:
     required = (
+        files.full_t1_mni,
+        files.brain_t1_mni,
+        files.skullstrip_mask_mni,
+        files.lesion_mask_mni,
         files.dilated_lesion_mask_mni,
         files.inpainted_t1_mni,
         files.brain_inpainted_t1_mni,
@@ -1180,9 +1441,63 @@ def inpainting_outputs_current(files: CaseFiles) -> bool:
     try:
         with files.metadata_json.open() as handle:
             metadata = json.load(handle)
-        return float(metadata.get("lesion_dilation_mm")) == LESION_DILATION_MM
+        return bool(
+            float(metadata.get("lesion_dilation_mm")) == LESION_DILATION_MM
+            and metadata.get("intensity_harmonization_version")
+            == INTENSITY_HARMONIZATION_VERSION
+            and bool(metadata.get("intensity_match")) == args.intensity_match
+            and float(metadata.get("intensity_match_ring_mm"))
+            == args.intensity_match_ring_mm
+            and bool(metadata.get("geometry_match"))
+            and bool(metadata.get("finite"))
+        )
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return False
+
+
+def case_outputs_current(files: CaseFiles, args: argparse.Namespace) -> bool:
+    if args.stop_after == "inpainting":
+        return inpainting_outputs_current(files, args)
+    required = [
+        files.full_t1_mni,
+        files.brain_t1_mni,
+        files.skullstrip_mask_mni,
+        files.metadata_json,
+    ]
+    if args.stop_after == "delineation":
+        required.extend([files.lesion_mask_mni, files.dilated_lesion_mask_mni])
+    return all(path.is_file() for path in required)
+
+
+def reusable_model_output(
+    files: CaseFiles, prepared: inpainting.PreparedCase
+) -> np.ndarray | None:
+    required = (files.model_input, files.model_mask, files.model_inpainted)
+    if not all(path.is_file() for path in required):
+        return None
+    input_image = nib.load(files.model_input)
+    mask_image = nib.load(files.model_mask)
+    output_image = nib.load(files.model_inpainted)
+    images = (input_image, mask_image, output_image)
+    if any(image.shape != prepared.model_image.shape for image in images):
+        return None
+    if any(
+        not np.allclose(image.affine, prepared.model_affine, atol=1e-4, rtol=1e-5)
+        for image in images
+    ):
+        return None
+    saved_input = np.asarray(input_image.dataobj, dtype=np.float32)
+    saved_mask = np.asarray(mask_image.dataobj) > 0
+    if not np.array_equal(saved_mask, prepared.model_mask > 0):
+        return None
+    if not np.allclose(
+        saved_input, prepared.model_image, atol=1e-4, rtol=1e-5, equal_nan=False
+    ):
+        return None
+    output = np.asarray(output_image.dataobj, dtype=np.float32)
+    if not np.isfinite(output).all():
+        return None
+    return output
 
 
 def process_case(
@@ -1229,7 +1544,7 @@ def process_case(
         )
         return None, model
 
-    inpainting_complete = inpainting_outputs_current(files)
+    inpainting_complete = inpainting_outputs_current(files, args)
     stats: dict[str, float | int | bool] | None = None
     if args.overwrite or not inpainting_complete:
         lesion = np.asarray(nib.load(files.lesion_mask_mni).dataobj) > 0
@@ -1238,20 +1553,28 @@ def process_case(
             print(f"[{case.case_id}] empty lesion mask; copied input T1s", flush=True)
         else:
             prepared = prepare_inpainting_case(files)
-            if model is None:
-                assert device is not None and dtype is not None
-                model = inpainting.load_model(
-                    args.inpainting_checkpoint, device, dtype
+            result = None if args.overwrite else reusable_model_output(files, prepared)
+            if result is not None:
+                print(
+                    f"[{case.case_id}] reusing saved diffusion sample; "
+                    "recomputing intensity harmonization only",
+                    flush=True,
                 )
-            assert device is not None and dtype is not None
-            result = inpainting.inpaint_batch(
-                [prepared],
-                model,
-                device,
-                dtype,
-                args.inpainting_steps,
-                args.seed + case.index,
-            )[0]
+            else:
+                if model is None:
+                    assert device is not None and dtype is not None
+                    model = inpainting.load_model(
+                        args.inpainting_checkpoint, device, dtype
+                    )
+                assert device is not None and dtype is not None
+                result = inpainting.inpaint_batch(
+                    [prepared],
+                    model,
+                    device,
+                    dtype,
+                    args.inpainting_steps,
+                    args.seed + case.index,
+                )[0]
             stats = save_subject_inpainting(
                 files,
                 prepared,
@@ -1290,12 +1613,36 @@ def main() -> int:
         args.nnunet_predict.resolve() if args.nnunet_predict else None
     )
     args.inpainting_checkpoint = args.inpainting_checkpoint.resolve()
-    validate_args(args)
+    if not args.input_root.is_dir():
+        raise FileNotFoundError(f"--input-root does not exist: {args.input_root}")
     cases = discover_cases(args)
     if not cases:
         print(f"No {args.modality} images found under {args.input_root}", file=sys.stderr)
         return 1
 
+    completed_cases = (
+        []
+        if args.dry_run or args.overwrite
+        else [
+            case
+            for case in cases
+            if case_outputs_current(files_for_case(case, args.output_dir), args)
+        ]
+    )
+    pending_count = len(cases) - len(completed_cases)
+    if pending_count == 0:
+        print(
+            f"All {len(cases)} case(s) already have current, complete outputs; "
+            "nothing to do",
+            flush=True,
+        )
+        for case in completed_cases:
+            clear_case_error(files_for_case(case, args.output_dir))
+        write_global_manifest([], args.output_dir)
+        write_failure_manifest(args.output_dir)
+        return 0
+
+    validate_args(args)
     if not args.dry_run:
         args.output_dir.mkdir(parents=True, exist_ok=True)
     env = build_env(args)
@@ -1317,11 +1664,27 @@ def main() -> int:
         f"and {session_count} session(s)",
         flush=True,
     )
+    if completed_cases:
+        print(
+            f"Skipping {len(completed_cases)} current completed scan(s); "
+            f"{pending_count} pending",
+            flush=True,
+        )
     print(f"Output root: {args.output_dir}", flush=True)
     rows: list[dict[str, object]] = []
     failures = 0
     for number, case in enumerate(cases, start=1):
         files = files_for_case(case, args.output_dir)
+        if not args.dry_run and not args.overwrite and case_outputs_current(files, args):
+            print(
+                f"[{number}/{len(cases)}] {case.case_id}: already complete, skipping",
+                flush=True,
+            )
+            clear_case_error(files)
+            with files.metadata_json.open() as handle:
+                previous = json.load(handle)
+            rows.append(previous)
+            continue
         try:
             row, model = process_case(
                 files,
@@ -1357,6 +1720,8 @@ def main() -> int:
 
     print("\nSubjectwise processing complete", flush=True)
     if not args.dry_run:
+        write_global_manifest(rows, args.output_dir)
+        write_failure_manifest(args.output_dir)
         print(f"Manifest: {args.output_dir / 'manifest.csv'}", flush=True)
         if failures:
             print(f"Failures: {args.output_dir / 'failures.csv'}", flush=True)
