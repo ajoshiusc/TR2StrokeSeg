@@ -15,7 +15,20 @@ module load python/3.13.5 git
 PROJECT_DIR="${PROJECT_DIR:-/project2/ajoshi_1183/Projects/TR2StrokeSeg}"
 cd "$PROJECT_DIR"
 
-export INPAINTING_CHECKPOINT="$PROJECT_DIR/stroke_brainsuite_analysis/Inpainting_Code"
+INPAINTING_CODE_DIR="$PROJECT_DIR/stroke_brainsuite_analysis/Inpainting_Code"
+DEFAULT_INPAINTING_CHECKPOINT="$INPAINTING_CODE_DIR/Inpainting_model_inpaint_smart_ir_epoch800.pt"
+
+# Older versions of this job file accidentally exported the code directory as
+# the checkpoint. Preserve a valid caller override, but repair empty/directory
+# values and validate the model before starting a subject.
+if [[ -z "${INPAINTING_CHECKPOINT:-}" || -d "${INPAINTING_CHECKPOINT:-}" ]]; then
+    export INPAINTING_CHECKPOINT="$DEFAULT_INPAINTING_CHECKPOINT"
+fi
+if [[ ! -f "$INPAINTING_CHECKPOINT" ]]; then
+    echo "ERROR: inpainting checkpoint not found: $INPAINTING_CHECKPOINT" >&2
+    exit 2
+fi
+echo "Inpainting checkpoint: $INPAINTING_CHECKPOINT"
 
 export BRAINSUITE_HOME=/project2/ajoshi_27/BrainSuite23a
 

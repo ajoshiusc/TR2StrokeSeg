@@ -22,7 +22,8 @@ Usage: submit_subjectwise_carc.sh [launcher options] [-- pipeline options]
 
 Discover BIDS scans under INPUT_ROOT and submit one GPU job per sub-* folder.
 All scans belonging to a subject are passed to the existing subjectwise
-stroke-delineation and diffusion-inpainting pipeline.
+stroke-delineation and diffusion-inpainting pipeline. A subject is skipped
+when OUTPUT_DIR/sub-* already exists, including partial or failed output.
 
 Launcher options:
   --input-root PATH       BIDS input root
@@ -180,6 +181,9 @@ mapfile -d '' SUBJECT_DIRS < <(
 declare -A CASE_OWNERS=()
 submitted=0
 scans_found=0
+subjects_with_scans=0
+subjects_skipped=0
+scans_skipped=0
 
 for subject_dir in "${SUBJECT_DIRS[@]}"; do
     subject="$(basename -- "$subject_dir")"
@@ -188,6 +192,16 @@ for subject_dir in "${SUBJECT_DIRS[@]}"; do
             -path "*/anat/*_${MODALITY}.nii.gz" -print0 | sort -z
     )
     ((${#scans[@]} > 0)) || continue
+    ((subjects_with_scans += 1))
+
+    subject_output_dir="$OUTPUT_DIR/$subject"
+    if [[ -d "$subject_output_dir" ]]; then
+        printf 'Skipping %-25s output directory exists: %s\n' \
+            "$subject" "$subject_output_dir"
+        ((subjects_skipped += 1))
+        ((scans_skipped += ${#scans[@]}))
+        continue
+    fi
 
     declare -a case_args=()
     for scan in "${scans[@]}"; do
@@ -235,11 +249,14 @@ for subject_dir in "${SUBJECT_DIRS[@]}"; do
     ((submitted += 1))
 done
 
-((submitted > 0)) || die "no *_${MODALITY}.nii.gz scans found in sub-*/ses-*/anat"
+((subjects_with_scans > 0)) || die "no *_${MODALITY}.nii.gz scans found in sub-*/ses-*/anat"
 
 if ((DRY_RUN)); then
-    printf 'Dry run: %d subject job(s), %d scan(s)\n' "$submitted" "$scans_found"
+    printf 'Dry run: %d subject job(s), %d scan(s); skipped %d existing subject(s), %d scan(s)\n' \
+        "$submitted" "$scans_found" "$subjects_skipped" "$scans_skipped"
 else
     printf 'Submitted %d subject job(s) for %d scan(s)\n' "$submitted" "$scans_found"
+    printf 'Skipped %d existing subject output(s), covering %d scan(s)\n' \
+        "$subjects_skipped" "$scans_skipped"
     printf 'Slurm logs: %s\n' "$LOG_DIR"
 fi
