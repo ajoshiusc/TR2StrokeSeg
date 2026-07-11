@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64GB
-#SBATCH --time=47:00:00
+#SBATCH --time=1:00:00
 #SBATCH --account=ajoshi_1183
 #SBATCH --partition=gpu 
 
