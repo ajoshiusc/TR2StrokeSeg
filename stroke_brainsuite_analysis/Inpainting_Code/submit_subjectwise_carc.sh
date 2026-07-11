@@ -43,7 +43,7 @@ example, use -- --overwrite or -- --inpainting-steps 250.
 
 Examples:
   ./submit_subjectwise_carc.sh --dry-run
-  ./submit_subjectwise_carc.sh --sbatch-arg=--time=24:00:00
+  ./submit_subjectwise_carc.sh --sbatch-arg=--mail-type=END,FAIL
   ./submit_subjectwise_carc.sh -- --disable-tta --inpainting-steps 500
 EOF
 }
