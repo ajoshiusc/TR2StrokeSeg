@@ -15,9 +15,9 @@ module load python/3.13.5 git
 PROJECT_DIR="${PROJECT_DIR:-/project2/ajoshi_1183/Projects/TR2StrokeSeg}"
 cd "$PROJECT_DIR"
 
-INPAINTING_CHECKPOINT="$PROJECT_DIR/stroke_brainsuite_analysis/Inpainting_Code"
+export INPAINTING_CHECKPOINT="$PROJECT_DIR/stroke_brainsuite_analysis/Inpainting_Code"
 
-BRAINSUITE_HOME=/project2/ajoshi_27/BrainSuite23a
+export BRAINSUITE_HOME=/project2/ajoshi_27/BrainSuite23a
 
 source "$PROJECT_DIR/.venv/bin/activate"
 
