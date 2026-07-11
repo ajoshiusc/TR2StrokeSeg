@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import json
 import os
 import shlex
@@ -29,6 +30,8 @@ import shutil
 import subprocess
 import sys
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1428,7 +1431,24 @@ def write_case_metadata(
     return metadata
 
 
+@contextmanager
+def manifest_write_lock(output_dir: Path) -> Iterator[None]:
+    """Serialize shared manifest rebuilds across subjectwise Slurm jobs."""
+    lock_path = output_dir / ".manifest.lock"
+    with lock_path.open("a") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
 def write_global_manifest(rows: list[dict[str, object]], output_dir: Path) -> None:
+    with manifest_write_lock(output_dir):
+        _write_global_manifest(rows, output_dir)
+
+
+def _write_global_manifest(rows: list[dict[str, object]], output_dir: Path) -> None:
     by_case: dict[str, dict[str, object]] = {}
     for metadata_path in sorted(output_dir.rglob("processing_metadata.json")):
         with metadata_path.open() as handle:
@@ -1482,6 +1502,11 @@ def clear_case_error(files: CaseFiles) -> None:
 
 
 def write_failure_manifest(output_dir: Path) -> None:
+    with manifest_write_lock(output_dir):
+        _write_failure_manifest(output_dir)
+
+
+def _write_failure_manifest(output_dir: Path) -> None:
     records: list[dict[str, object]] = []
     for error_path in sorted(output_dir.rglob("processing_error.json")):
         with error_path.open() as handle:
