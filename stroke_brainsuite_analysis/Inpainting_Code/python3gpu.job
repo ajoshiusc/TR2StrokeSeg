@@ -16,6 +16,8 @@ cd "$PROJECT_DIR"
 
 INPAINTING_CHECKPOINT="$PROJECT_DIR/stroke_brainsuite_analysis/Inpainting_Code"
 
+BRAINSUITE_HOME=/project2/ajoshi_27/BrainSuite23a
+
 source "$PROJECT_DIR/.venv/bin/activate"
 
 source "$PROJECT_DIR/scripts/setup_environment.sh"
