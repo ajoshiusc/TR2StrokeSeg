@@ -91,30 +91,141 @@ class CaseFiles:
     error_json: Path
 
 
-def parse_args() -> argparse.Namespace:
-    default_input = Path("/deneb_disk/ARC")
-    default_mni = delineation.first_existing(delineation.MNI_TEMPLATE_CANDIDATES)
-    default_results = delineation.first_existing(delineation.NNUNET_RESULTS_CANDIDATES)
-    default_fsl = delineation.first_existing(delineation.FSL_BIN_CANDIDATES)
-    default_bse = delineation.executable_default("bse", delineation.BSE_CANDIDATES)
-    default_predict = delineation.executable_default(
+def environment_path(*names: str) -> Path | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return Path(value).expanduser()
+    return None
+
+
+def first_existing(paths: list[Path | None]) -> Path | None:
+    for path in paths:
+        if path is not None and path.exists():
+            return path
+    return None
+
+
+def command_parent(name: str) -> Path | None:
+    command = shutil.which(name)
+    return Path(command).parent if command else None
+
+
+def default_arc_root() -> Path:
+    configured = environment_path("ARC_ROOT")
+    if configured is not None:
+        return configured
+    return first_existing(
+        [
+            Path("/project2/ajoshi_1183/data/ARC"),
+            Path("/deneb_disk/ARC"),
+        ]
+    ) or Path("/deneb_disk/ARC")
+
+
+def default_mni_template() -> Path | None:
+    configured = environment_path("MNI_TEMPLATE")
+    if configured is not None:
+        return configured
+    fsldir = environment_path("FSLDIR")
+    return first_existing(
+        [
+            Path(
+                "/project2/ajoshi_1183/data/ATLAS_2/"
+                "MNI152NLin2009aSym.nii.gz"
+            ),
+            Path(
+                "/project2/ajoshi_1183/data/TR2/ATLAS_2/"
+                "MNI152NLin2009aSym.nii.gz"
+            ),
+            *delineation.MNI_TEMPLATE_CANDIDATES,
+            fsldir / "data" / "standard" / "MNI152_T1_1mm.nii.gz"
+            if fsldir is not None
+            else None,
+        ]
+    )
+
+
+def default_nnunet_results() -> Path | None:
+    configured = environment_path("nnUNet_results", "NNUNET_RESULTS")
+    if configured is not None:
+        return configured
+    return first_existing(
+        [
+            Path("/project2/ajoshi_1183/data/TR2/nnUNet_results"),
+            Path("/project2/ajoshi_1183/data/nnUNet_results"),
+            *delineation.NNUNET_RESULTS_CANDIDATES,
+        ]
+    )
+
+
+def default_fsl_bin() -> Path | None:
+    fsldir = environment_path("FSLDIR")
+    return first_existing(
+        [
+            fsldir / "bin" if fsldir is not None else None,
+            command_parent("flirt"),
+            *delineation.FSL_BIN_CANDIDATES,
+        ]
+    )
+
+
+def default_bse_path() -> Path | None:
+    configured = environment_path("BSE_PATH")
+    if configured is not None:
+        return configured
+    brainsuite_home = environment_path("BRAINSUITE_HOME")
+    candidates = list(delineation.BSE_CANDIDATES)
+    if brainsuite_home is not None:
+        candidates.insert(0, brainsuite_home / "bin" / "bse")
+    return delineation.executable_default("bse", candidates)
+
+
+def default_nnunet_predict() -> Path | None:
+    configured = environment_path("NNUNET_PREDICT")
+    if configured is not None:
+        return configured
+    return delineation.executable_default(
         "nnUNetv2_predict", delineation.NNUNET_PREDICT_CANDIDATES
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    default_input = default_arc_root()
+    default_output = environment_path("STROKE_INPAINT_OUTPUT_DIR")
+    default_cache = environment_path("STROKE_INPAINT_CACHE_DIR")
+    default_mni = default_mni_template()
+    default_results = default_nnunet_results()
+    default_fsl = default_fsl_bin()
+    default_bse = default_bse_path()
+    default_predict = default_nnunet_predict()
+    default_inpainting_checkpoint = environment_path("INPAINTING_CHECKPOINT") or (
+        HERE / "Inpainting_model_inpaint_smart_ir_epoch800.pt"
     )
 
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=(
-            "With no input/output arguments, process every T1w scan under "
-            "/deneb_disk/ARC and write to "
-            "/deneb_disk/ARC/derivatives/stroke_inpainting."
+            "Auto-detects CARC /project2/ajoshi_1183/data/ARC or local "
+            "/deneb_disk/ARC. Environment overrides: ARC_ROOT, "
+            "STROKE_INPAINT_OUTPUT_DIR, STROKE_INPAINT_CACHE_DIR, "
+            "MNI_TEMPLATE, FSLDIR, BSE_PATH/BRAINSUITE_HOME, "
+            "nnUNet_results/NNUNET_RESULTS, NNUNET_PREDICT, and "
+            "INPAINTING_CHECKPOINT."
         ),
     )
     parser.add_argument("--input-root", type=Path, default=default_input)
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=None,
+        default=default_output,
         help="Default: <input-root>/derivatives/stroke_inpainting",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=default_cache,
+        help="Default: $SLURM_TMPDIR/stroke_inpainting_cache on CARC, else output cache",
     )
     parser.add_argument("--modality", default="T1w")
     parser.add_argument(
@@ -159,9 +270,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--inpainting-checkpoint",
         type=Path,
-        default=HERE / "Inpainting_model_inpaint_smart_ir_epoch800.pt",
+        default=default_inpainting_checkpoint,
     )
-    parser.add_argument("--inpainting-device", default="cuda")
+    parser.add_argument(
+        "--inpainting-device",
+        choices=("auto", "cpu", "cuda", "mps"),
+        default="auto",
+    )
     parser.add_argument(
         "--inpainting-precision",
         choices=("auto", "float16", "float32"),
@@ -314,9 +429,9 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     env["PATH"] = os.pathsep.join(path_entries)
     if args.nnunet_results is not None:
         env["nnUNet_results"] = str(args.nnunet_results)
-    cache = args.output_dir / "_nnunet_cache"
-    env.setdefault("nnUNet_raw", str(cache / "raw"))
-    env.setdefault("nnUNet_preprocessed", str(cache / "preprocessed"))
+    cache = args.cache_dir
+    env["nnUNet_raw"] = str(cache / "raw")
+    env["nnUNet_preprocessed"] = str(cache / "preprocessed")
     if not args.dry_run:
         Path(env["nnUNet_raw"]).mkdir(parents=True, exist_ok=True)
         Path(env["nnUNet_preprocessed"]).mkdir(parents=True, exist_ok=True)
@@ -1286,7 +1401,14 @@ def write_case_metadata(
             args.disable_tta
             or (args.resolved_nnunet_device == "cpu" and not args.enable_tta)
         ),
+        "input_root": str(args.input_root),
+        "output_root": str(args.output_dir),
+        "cache_dir": str(args.cache_dir),
+        "hostname": os.uname().nodename,
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
         "inpainting_checkpoint": str(args.inpainting_checkpoint.resolve()),
+        "inpainting_device_requested": args.inpainting_device,
+        "inpainting_device_used": args.resolved_inpainting_device,
         "inpainting_steps": args.inpainting_steps,
         "seed": args.seed + files.case.index,
         "intensity_match": args.intensity_match,
@@ -1413,7 +1535,15 @@ def resolve_nnunet_device(args: argparse.Namespace) -> str:
 
 
 def resolve_inpainting_dtype(args: argparse.Namespace) -> tuple[torch.device, torch.dtype]:
-    device = torch.device(args.inpainting_device)
+    device_name = args.inpainting_device
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            device_name = "cuda"
+        elif torch.backends.mps.is_available():
+            device_name = "mps"
+        else:
+            device_name = "cpu"
+    device = torch.device(device_name)
     precision = args.inpainting_precision
     if precision == "auto":
         precision = "float16" if device.type == "cuda" else "float32"
@@ -1603,6 +1733,14 @@ def main() -> int:
     if args.output_dir is None:
         args.output_dir = args.input_root / "derivatives" / "stroke_inpainting"
     args.output_dir = args.output_dir.resolve()
+    if args.cache_dir is None:
+        slurm_tmpdir = environment_path("SLURM_TMPDIR")
+        args.cache_dir = (
+            slurm_tmpdir / "stroke_inpainting_cache"
+            if slurm_tmpdir is not None
+            else args.output_dir / "_nnunet_cache"
+        )
+    args.cache_dir = args.cache_dir.resolve()
     args.mni_template = args.mni_template.resolve() if args.mni_template else None
     args.fsl_bin = args.fsl_bin.resolve() if args.fsl_bin else None
     args.bse_path = args.bse_path.resolve() if args.bse_path else None
@@ -1654,8 +1792,10 @@ def main() -> int:
     device: torch.device | None = None
     dtype: torch.dtype | None = None
     model: torch.nn.Module | None = None
+    args.resolved_inpainting_device = "not_run"
     if args.stop_after == "inpainting" and not args.dry_run:
         device, dtype = resolve_inpainting_dtype(args)
+        args.resolved_inpainting_device = str(device)
 
     subject_count = len({case.subject for case in cases})
     session_count = len({(case.subject, case.session) for case in cases})
@@ -1671,6 +1811,7 @@ def main() -> int:
             flush=True,
         )
     print(f"Output root: {args.output_dir}", flush=True)
+    print(f"Cache root: {args.cache_dir}", flush=True)
     rows: list[dict[str, object]] = []
     failures = 0
     for number, case in enumerate(cases, start=1):
