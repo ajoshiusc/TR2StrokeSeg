@@ -1,5 +1,6 @@
 #!/usr/bin/bash
-#SBATCH --gres=gpu:a10,a100,v100,l40s,a40:1
+#SBATCH --gres=gpu:1
+#SBATCH --constraint="a100|v100|l40s|a40"
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
