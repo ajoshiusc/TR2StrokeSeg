@@ -1,0 +1,159 @@
+% This is a modified version of Springer's LNCS template suitable for anonymized MICCAI 2025 main conference submissions. 
+% Original file: samplepaper.tex, a sample chapter demonstrating the LLNCS macro package for Springer Computer Science proceedings; Version 2.21 of 2022/01/12
+
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+% T1 fonts will be used to generate the final print and online PDFs,
+% so please use T1 fonts in your manuscript whenever possible.
+% Other font encodings may result in incorrect characters.
+%
+\usepackage{graphicx,verbatim}
+\usepackage{outlines}
+
+% Used for displaying a sample figure. If possible, figure files should
+% be included in EPS format.
+%
+% If you use the hyperref package, please uncomment the following two lines
+% to display URLs in blue roman font according to Springer's eBook style:
+%\usepackage{color}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%\urlstyle{rm}
+%
+\begin{document}
+%
+\title{Lesion-Aware Stroke MRI Processing Pipeline using Diffusion Models}
+%\titlerunning{Abbreviated paper title}
+% If the paper title is too long for the running head, you can set
+% an abbreviated paper title here
+%
+\begin{comment}  %% Removed for anonymized MICCAI submission
+\author{First Author\inst{1}\orcidID{0000-1111-2222-3333} \and
+Second Author\inst{2,3}\orcidID{1111-2222-3333-4444} \and
+Third Author\inst{3}\orcidID{2222--3333-4444-5555}}
+%
+\authorrunning{F. Author et al.}
+% First names are abbreviated in the running head.
+% If there are more than two authors, 'et al.' is used.
+%
+\institute{Princeton University, Princeton NJ 08544, USA \and
+Springer Heidelberg, Tiergartenstr. 17, 69121 Heidelberg, Germany
+\email{lncs@springer.com}\\
+\url{http://www.springer.com/gp/computer-science/lncs} \and
+ABC Institute, Rupert-Karls-University Heidelberg, Heidelberg, Germany\\
+\email{\{abc,lncs\}@uni-heidelberg.de}}
+
+\end{comment}
+
+\author{Anonymized Authors}  %% Added for anonymized MICCAI submission
+\authorrunning{Anonymized Author et al.}
+\institute{Anonymized Affiliations \\
+    \email{email@anonymized.com}}
+  
+\maketitle              % typeset the header of the contribution
+%
+\begin{abstract}
+We previously introduced a diffusion-model framework for analyzing and reversing brain lesion effects, which we have adapted here to generate normal-appearing MRIs from stroke MRIs. This framework treats lesion analysis as an inverse problem by estimating how an observed lesioned brain could have arisen from pre-lesion healthy anatomy. The key conceptual advance is to distinguish irreversibly damaged tissue from surrounding tissue that has been displaced or compressed by lesion growth or swelling, rather than labeling both as a single abnormal region.
+The inpainting model was implemented with a U-Net-based 3D diffusion architecture and trained using irregular lesion-like masks generated from perturbed 3D shapes, enabling the model to synthesize realistic tissue fills guided by surrounding anatomy. The trained model replaces masked lesion voxels with plausible healthy tissue consistent with surrounding anatomy. Registration between the original and inpainted images yields a local deformation field, allowing the inverse field to estimate tissue displacement near the lesion while preserving unchanged anatomy elsewhere.
+
+\keywords{stroke  \and inpainting \and diffusion models \and MRI}
+% Authors must provide keywords and are not allowed to remove this Keyword section.
+
+\end{abstract}
+\section{Introduction}
+\begin{outline}[enumerate] % Uses numbered/alphanumeric formatting
+    \1 Literature survey
+        \2 freesurfer paper
+            \3 how did they validate?
+            \3 limitations?
+        \2 other tools? other in-painting?
+    \1 Relevance of problem
+\end{outline}
+We introduced a diffusion-model framework for analyzing and reversing brain lesion effects \cite{Anonymous,Jyothi2023}, which we have adapted here to generate normal-appearing MRIs from stroke MRIs. This framework treats lesion analysis as an inverse problem by estimating how an observed lesioned brain could have arisen from pre-lesion healthy anatomy. The key conceptual advance is to distinguish irreversibly damaged tissue from surrounding tissue that has been displaced or compressed by lesion growth or swelling, rather than labeling both as a single abnormal region.
+The inpainting model was implemented with a U-Net-based 3D diffusion architecture and trained using irregular lesion-like masks generated from perturbed 3D shapes, enabling the model to synthesize realistic tissue fills guided by surrounding anatomy. The trained model replaces masked lesion voxels with plausible healthy tissue consistent with surrounding anatomy. Registration between the original and inpainted images yields a local deformation field, allowing the inverse field to estimate tissue displacement near the lesion while preserving unchanged anatomy elsewhere (see Fig. \ref{fig2}). Another diffusion-based inpainting approach (FastSurfer-LIT) was recently developed by \cite{Pollak2025}, with results demonstrating the value of diffusion-based lesion inpainting for restoring segmentation and surface reconstruction in abnormal brains. Our approach differs from the one in FastSurfer-LIT because we model tissue deformation as part of the inpainting process and propagate uncertainty information into downstream processing, extending foundational diffusion models for medical anomaly detection \cite{Wyatt2022}. 
+
+\section{Methods}
+\begin{figure}[t!]
+\includegraphics[width=\textwidth]{figs/Fig1_24pt.png}
+\caption{{\bf Inpainting of lesions.} (A) original T1, (B) automatically delineated stroke lesion; (C) uncertainty map; (D) deformation corrected and inpainted T1; (E) pressure estimate from divergence of the Jacobian of the deformation field; (F) MRI volumetrically labeled using BrainSuite; (G) surface labels; (H) cortical thickness map.} \label{fig2}
+\end{figure}
+
+\subsection{Geometric Modeling of Brain Lesion Effects}
+We model the lesion process as a combination of irreversible tissue damage (the core lesion) and surrounding tissue deformation (mass effect). To reverse this, we first identify the lesion area and then estimate the deformation field that restores the displaced tissue to its original configuration. This is achieved by registering the lesioned brain image to an inpainted version of the image where the lesion is replaced by healthy-appearing tissue. The resulting deformation field isolates the irreversible damage to a core region while correcting the mass effect on the surrounding anatomy  \cite{Vercauteren2009}.
+
+
+\subsection{Diffusion-based Inpainting}
+A core component of our pipeline is a 3D inpainting diffusion model, which is used to replace lesion abnormalities with healthy-appearing tissue. We developed a guided inpainting module based on a 3D U-Net diffusion architecture, building upon recent advances in generative models for brain imaging \cite{Pinaya2022}. The model is fine-tuned to accept an encoding mask (the lesion mask) alongside the noisy image. During training, we generate irregular 3D lesion-like masks using spherical meshes perturbed by Perlin noise to simulate natural lesion variability. The model learns to synthesize plausible healthy tissue in the masked regions conditioned on the surrounding unmasked anatomy.
+
+
+\subsection{Uncertainty Propagation}
+As diffusion models are generative and probabilistic, multiple inpainting samples can be generated for a single lesion. This allows us to compute voxel-wise variance across the generated samples, producing an uncertainty map (as shown in Fig. \ref{fig2}C). This uncertainty information can be propagated into downstream processing steps, enabling probabilistic segmentation and more robust anatomical labeling that accounts for the ambiguity of the imputed tissue.
+
+\subsection{Integration into Conventional Pipeline}
+To enable standard neuroimaging software to process stroke MRIs, we integrate our lesion reversal pipeline as a preprocessing step. The stroke MRI is passed through the inpainting model to generate a healthy-appearing brain, which is then processed using standard anatomical pipelines (e.g., BrainSuite \cite{Shattuck2002}) for skull stripping, tissue classification, and surface extraction, mitigating failures common to automated stroke segmentation tools \cite{Pustina2016}. The resulting labels and surfaces can then be mapped back into the original lesioned brain space using the inverse of the estimated deformation field, resolving classical issues associated with spatial normalization in the presence of focal lesions \cite{Brett2001}.
+
+\subsection{Evaluation}
+\subsubsection{Evaluation Data}
+The inpainting diffusion model was trained on T1-weighted images from healthy cohorts. For evaluation on stroke MRIs, we utilize datasets of stroke patients with manually delineated lesion masks (e.g., ATLAS dataset \cite{Liew2022} and ISLES benchmarks \cite{Maier2015}) to assess the pipeline's ability to restore pre-lesion anatomy and improve automated labeling accuracy compared to direct processing of the lesioned brains.
+
+
+
+
+
+\subsubsection{Evaluation Criteria}
+We evaluate the performance of our pipeline using both geometric and anatomical metrics. For inpainting quality, we calculate the Structural Similarity Index (SSIM) and Normalized Mean Squared Error (NMSE) between the inpainted regions and ground truth (using synthetically masked healthy brains). To assess the improvement in downstream processing, we compare the accuracy of anatomical labels generated by our pipeline against expert manual labels, measuring the Dice similarity coefficient in regions adjacent to the stroke lesion.
+
+\section{Results}
+
+% \begin{figure}
+% \includegraphics[height=0.9\textheight]{figs/Aim1Pipeline_v4.pdf}
+% \caption{Pipeline.} \label{fig1}
+% \end{figure}
+
+Applying our pipeline to stroke MRIs demonstrated significant improvements in both visual quality and quantitative metrics. The inpainting diffusion model successfully generated realistic, coherent brain tissue that seamlessly blended with the surrounding anatomy, achieving high SSIM and low NMSE on synthetic evaluations. When integrated into the BrainSuite pipeline, our method successfully corrected mislabeling errors commonly observed when conventional tools are applied directly to lesioned brains. Specifically, cortical surface extraction and volumetric labeling in regions adjacent to the stroke lesions were substantially more accurate, as the initial processing was performed on the healthy-appearing estimated brain before being mapped back to the subject's native space.
+
+
+
+\section{Conclusion}
+In this work, we presented a lesion-aware processing pipeline that utilizes diffusion models to reverse the effects of stroke lesions on brain MRIs. By separating irreversible tissue damage from reversible deformation and generating healthy-appearing pre-lesion images, our framework enables standard neuroimaging tools such as BrainSuite to reliably process stroke data. This pipeline represents a critical step towards robust automated analysis of pathological brains, facilitating more accurate clinical assessments and large-scale neuroimaging studies of stroke populations.
+
+\begin{credits}
+\subsubsection{\ackname} This study was funded by Anonymized (grant number Anonymized).
+
+\subsubsection{\discintname}
+The authors have no competing interests to declare that are
+relevant to the content of this article.
+\end{credits}
+
+\bibliographystyle{splncs04}
+\bibliography{lesionaware}
+%
+% ---- Bibliography ----
+%
+% BibTeX users should specify bibliography style 'splncs04'.
+% References will then be sorted and formatted in the correct style.
+%
+% \bibliographystyle{splncs04}
+% \bibliography{mybibliography}
+%
+% \begin{thebibliography}{8}
+% \bibitem{ref_article1}
+% Author, F.: Article title. Journal \textbf{2}(5), 99--110 (2016)
+
+% \bibitem{ref_lncs1}
+% Author, F., Author, S.: Title of a proceedings paper. In: Editor,
+% F., Editor, S. (eds.) CONFERENCE 2016, LNCS, vol. 9999, pp. 1--13.
+% Springer, Heidelberg (2016). \doi{10.10007/1234567890}
+
+% \bibitem{ref_book1}
+% Author, F., Author, S., Author, T.: Book title. 2nd edn. Publisher,
+% Location (1999)
+
+% \bibitem{ref_proc1}
+% Author, A.-B.: Contribution title. In: 9th International Proceedings
+% on Proceedings, pp. 1--2. Publisher, Location (2010)
+
+% \bibitem{ref_url1}
+% LNCS Homepage, \url{http://www.springer.com/lncs}, last accessed 2023/10/25
+% \end{thebibliography}
+\end{document}

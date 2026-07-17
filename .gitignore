@@ -229,3 +229,8 @@ results/
 *.pkl
 *.png
 *.json
+*.pdf
+*.pth
+*.aux
+*.log
+*.pt

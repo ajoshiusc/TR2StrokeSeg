@@ -1,0 +1,187 @@
+% This is a modified version of Springer's LNCS template suitable for anonymized MICCAI 2025 main conference submissions. 
+% Original file: samplepaper.tex, a sample chapter demonstrating the LLNCS macro package for Springer Computer Science proceedings; Version 2.21 of 2022/01/12
+
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+% T1 fonts will be used to generate the final print and online PDFs,
+% so please use T1 fonts in your manuscript whenever possible.
+% Other font encodings may result in incorrect characters.
+%
+\usepackage{graphicx,verbatim,booktabs}
+\input{analysis/arc_inpainting/paper_results.tex}
+
+% Used for displaying a sample figure. If possible, figure files should
+% be included in EPS format.
+%
+% If you use the hyperref package, please uncomment the following two lines
+% to display URLs in blue roman font according to Springer's eBook style:
+%\usepackage{color}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%\urlstyle{rm}
+%
+\begin{document}
+%
+\title{Lesion-Aware Stroke MRI Processing Pipeline using Diffusion Models}
+%\titlerunning{Abbreviated paper title}
+% If the paper title is too long for the running head, you can set
+% an abbreviated paper title here
+%
+\begin{comment}  %% Removed for anonymized MICCAI submission
+\author{First Author\inst{1}\orcidID{0000-1111-2222-3333} \and
+Second Author\inst{2,3}\orcidID{1111-2222-3333-4444} \and
+Third Author\inst{3}\orcidID{2222--3333-4444-5555}}
+%
+\authorrunning{F. Author et al.}
+% First names are abbreviated in the running head.
+% If there are more than two authors, 'et al.' is used.
+%
+\institute{Princeton University, Princeton NJ 08544, USA \and
+Springer Heidelberg, Tiergartenstr. 17, 69121 Heidelberg, Germany
+\email{lncs@springer.com}\\
+\url{http://www.springer.com/gp/computer-science/lncs} \and
+ABC Institute, Rupert-Karls-University Heidelberg, Heidelberg, Germany\\
+\email{\{abc,lncs\}@uni-heidelberg.de}}
+
+\end{comment}
+
+\author{Anonymized Authors}  %% Added for anonymized MICCAI submission
+\authorrunning{Anonymized Author et al.}
+\institute{Anonymized Affiliations \\
+    \email{email@anonymized.com}}
+  
+\maketitle              % typeset the header of the contribution
+%
+\begin{abstract}
+Focal stroke lesions violate the normal-anatomy assumptions of conventional MRI processing and can corrupt measurements well beyond the lesion. We evaluate a lesion-aware workflow that automatically delineates the lesion, replaces a dilated target using a 3D diffusion model, and applies BrainSuite. Generated tissue is treated only as a computational scaffold: no intensity or morphometric measurement from any region touching the inpainting target is used as a biological endpoint. In \ArcNMatched{} ARC participants, each T1 acquisition was processed directly and with the lesion-aware workflow. Among homologous ROI pairs entirely outside the dilated target, the workflow reduced interhemispheric asymmetry in tissue volume from \ArcSparedVolumeBeforeMedian\% to \ArcSparedVolumeAfterMedian\% (Holm-adjusted \(p\) \ArcSparedVolumeP), cortical area from \ArcSparedAreaBeforeMedian\% to \ArcSparedAreaAfterMedian\% (adjusted \(p\) \ArcSparedAreaP), and cortical thickness from \ArcSparedThicknessBeforeMedian\% to \ArcSparedThicknessAfterMedian\% (adjusted \(p\) \ArcSparedThicknessP). For construct validation, the original binary lesion mask---not synthesized tissue---was intersected with post-inpainting atlas labels. Left perisylvian lesion burden remained associated with lower Western Aphasia Battery Aphasia Quotient after adjustment for total lesion volume, age at stroke, and assessment delay (partial \(\rho=\ArcClinicalLeftRho\), adjusted \(p\) \ArcClinicalLeftP). These results support inpainting as a means to stabilize downstream measurements in spared brain, not as a method for measuring the invented tissue itself.
+
+\keywords{stroke  \and inpainting \and diffusion models \and MRI}
+% Authors must provide keywords and are not allowed to remove this Keyword section.
+
+\end{abstract}
+\section{Introduction}
+Automated anatomical pipelines are generally optimized for brains with normal tissue contrast and topology. Stroke cavities, gliosis, and mass effect can therefore be mistaken for cerebrospinal fluid or disrupt gray/white boundaries, with errors propagating into cortical surfaces, regional volumes, and spatial normalization \cite{Brett2001,Pustina2016}. Lesion filling offers a practical way to present conventional software with a healthy-appearing surrogate while retaining the original lesion mask for subsequent analysis.
+
+We previously introduced a diffusion-model framework for analyzing and reversing brain lesion effects \cite{Anonymous,Jyothi2023}. Here, a conditional 3D diffusion model replaces the automatically delineated stroke region with tissue guided by the surrounding T1 anatomy. The approach complements recent diffusion-based lesion inpainting for anatomical reconstruction \cite{Pollak2025} and builds on generative models for medical anomaly detection \cite{Wyatt2022}. In addition to image completion, our framework can estimate deformation between lesioned and inpainted anatomy and propagate sampling uncertainty.
+
+The present study asks the question relevant to downstream studies: does using an inpainted image as an intermediate improve measurements of real, spared anatomy? Values inside the generated region are inherently synthetic and are therefore excluded rather than validated as biological measurements. We make two contributions: (i) a paired comparison of BrainSuite morphometry in homologous regions with zero overlap with the dilated inpainting target, and (ii) construct validation of anatomical lesion localization using Western Aphasia Battery (WAB) scores. The analysis is fully scripted and acquisition matched.
+
+\section{Methods}
+\IfFileExists{figs/Fig1_24pt.png}{\begin{figure}[t!]
+\includegraphics[width=\textwidth]{figs/Fig1_24pt.png}
+\caption{{\bf Inpainting of lesions.} (A) original T1, (B) automatically delineated stroke lesion; (C) uncertainty map; (D) deformation corrected and inpainted T1; (E) pressure estimate from divergence of the Jacobian of the deformation field; (F) MRI volumetrically labeled using BrainSuite; (G) surface labels; (H) cortical thickness map.} \label{fig2}
+\end{figure}}{}
+
+\subsection{Geometric Modeling of Brain Lesion Effects}
+We model the lesion process as a combination of irreversible tissue damage (the core lesion) and surrounding tissue deformation (mass effect). To reverse this, we first identify the lesion area and then estimate the deformation field that restores the displaced tissue to its original configuration. This is achieved by registering the lesioned brain image to an inpainted version of the image where the lesion is replaced by healthy-appearing tissue. The resulting deformation field isolates the irreversible damage to a core region while correcting the mass effect on the surrounding anatomy  \cite{Vercauteren2009}.
+
+
+\subsection{Diffusion-based Inpainting}
+A core component of our pipeline is a guided 3D U-Net diffusion architecture, building upon recent generative models for brain imaging \cite{Pinaya2022}. The model accepts an encoding mask together with the noisy image. During training, irregular lesion-like masks are generated from spherical meshes perturbed by Perlin noise. At inference, T1 images undergo reorientation, N4 bias correction, skull stripping, and 12-degree-of-freedom affine registration to a 1-mm symmetric MNI template. An nnU-Net model delineates the stroke, and the mask is dilated by 3~mm within the brain before 1,000 diffusion steps. A monotonic quantile mapping and 3-mm feather match generated tissue to native intensities at the inner lesion boundary. Voxels outside the dilated mask are copied exactly from the registered input.
+
+
+\subsection{Uncertainty Propagation}
+As diffusion models are generative and probabilistic, multiple inpainting samples can be generated for a single lesion. This allows us to compute voxel-wise variance across the generated samples and propagate uncertainty into downstream segmentation and labeling. The present evaluation used one sample per participant; uncertainty calibration is reserved for future work.
+
+\subsection{Integration into Conventional Pipeline}
+The healthy-appearing T1 is processed by BrainSuite v23a \cite{Shattuck2002} for skull stripping, tissue classification, cortical surface extraction, SVReg atlas labeling, regional volumes, surface areas, and cortical thickness. Labels and surfaces can subsequently be mapped to the original lesioned anatomy. For evaluation, the same acquisition was also processed directly with the BrainSuite BIDS App. The direct branch received the original native-space T1, whereas the lesion-aware branch received the inpainted 1-mm MNI image; consequently, downstream comparisons quantify the deployed preprocessing pipeline rather than the isolated causal effect of voxel replacement.
+
+\subsection{Evaluation}
+\subsubsection{ARC Data and Paired Processing}
+We analyzed the intersection of completed direct and inpainted BrainSuite outputs in the ARC BIDS archive: \ArcNMatched{} unique participants and one T1 acquisition per participant. Median automatically delineated lesion volume was \ArcLesionMedian{}~mL (IQR \ArcLesionQOne--\ArcLesionQThree); \ArcLeftDominant{} lesions were left-dominant and \ArcRightDominant{} was right-dominant. Participant-level WAB Aphasia Quotient, age at stroke, and days from stroke to WAB were obtained from the participant table. No pre-stroke T1 or expert BrainSuite labels were available, so all endpoints use internal controls and are interpreted as plausibility or construct-validity measures rather than reconstruction accuracy.
+
+
+
+
+
+\subsubsection{Spared-Anatomy Endpoints}
+The generated region was excluded from all morphometric endpoints. BrainSuite volumetric labels \(1000+\mathrm{ROI}\) and \(2000+\mathrm{ROI}\) (cortical gray and white matter) were first reduced to their canonical ROI identifiers. A homologous ROI pair was eligible only when neither hemisphere had any voxel overlap with the 3-mm-dilated inpainting target; even a single overlapping voxel excluded the pair. Thus, synthetic tissue and the blending margin contributed no regional volume, area, or thickness value to the analysis.
+
+For each eligible spared pair, interhemispheric asymmetry was \(A=200|x_L-x_R|/(x_L+x_R)\) for total tissue volume, mid-cortical area, and mean cortical thickness. The median across eligible pairs formed one participant-level observation for each endpoint. This symmetry measure does not assume that the generated tissue is correct; it tests whether using inpainting as a preprocessing scaffold produces more internally consistent measurements elsewhere in the brain.
+
+\subsubsection{Aphasia Construct Validity}
+For a separate construct-validity analysis, we intersected the original binary source-lesion mask with post-inpainting atlas labels in a prespecified left perisylvian network: pars opercularis, pars triangularis, pars orbitalis, supramarginal and angular gyri, superior, transverse, and middle temporal gyri, and insula. This analysis uses lesion presence and anatomical localization only; it does not use generated intensity, thickness, area, or volume as a biological measurement. Partial Spearman correlation related localized lesion burden to WAB Aphasia Quotient while controlling for total lesion volume, age at stroke, and \(\log(1+\mathrm{days})\). Total lesion volume was evaluated while controlling for age and assessment delay; the right homolog network was a negative control. This analysis establishes clinical plausibility of the anatomical localization and is not treated as a paired superiority endpoint.
+
+Paired pipeline endpoints were tested with two-sided Wilcoxon signed-rank tests. We report the paired median improvement, a participant-bootstrap 95\% confidence interval (10,000 resamples), and rank-biserial effect size (positive favors inpainting). Holm correction was applied across the three spared-anatomy endpoints and separately across three clinical associations. Analyses were performed with Python, NumPy, SciPy, pandas, and NiBabel; the complete script and case-level tables accompany the manuscript.
+
+\section{Results}
+All \ArcNAnalyzed{} inpainted images were finite, shared the expected 1-mm geometry, and were exactly unchanged outside the dilated target. These are implementation quality controls only; no image-quality or morphometric result from within the generated region is presented as biological evidence.
+
+Representative cases at the 10th, 50th, and 90th percentiles of lesion volume illustrate the downstream processing behavior (Fig.~\ref{fig:representative-outputs}). With increasing lesion burden, direct processing shows progressively greater interruption of volumetric labeling and the midcortical surface, whereas the inpainted workflow supplies a continuous computational substrate. These panels are qualitative pipeline illustrations only; labels or surfaces within the outlined generated region are not interpreted as recovered anatomy and do not enter any endpoint.
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{analysis/arc_inpainting/representative_outputs/arc_representative_brainsuite_outputs.pdf}
+\caption{{\bf Representative outputs across lesion sizes.} Paired original/direct and inpainted rows show cases nearest the cohort 10th, 50th, and 90th percentiles of source-lesion volume (7.3, 78.6, and 216.7~mL). Columns show a lesion-centered axial T1, the SVReg volumetric label overlay, and left midcortical surface labels in lateral view. Direct BrainSuite labels were affinely carried to the same pre-inpainting MNI grid for display. Red and white contours mark the original source-lesion mask. Labels and surfaces within the outlined inpainted region are algorithmic outputs shown only to illustrate pipeline behavior; no measurement there is used as biological evidence.}\label{fig:representative-outputs}
+\end{figure}
+
+The study-relevant endpoints all favored the inpainted workflow (Fig.~\ref{fig:arc-validation}A--C; Table~\ref{tab:paired-results}). In spared ROI pairs with zero target overlap, median tissue-volume asymmetry decreased from \ArcSparedVolumeBeforeMedian\% to \ArcSparedVolumeAfterMedian\% (paired reduction \ArcSparedVolumeDeltaMedian{} points, 95\% CI \ArcSparedVolumeDeltaCILow--\ArcSparedVolumeDeltaCIHigh; rank-biserial \(r=\ArcSparedVolumeEffect\), adjusted \(p\) \ArcSparedVolumeP). Cortical-area asymmetry decreased from \ArcSparedAreaBeforeMedian\% to \ArcSparedAreaAfterMedian\% (reduction \ArcSparedAreaDeltaMedian{} points, 95\% CI \ArcSparedAreaDeltaCILow--\ArcSparedAreaDeltaCIHigh; \(r=\ArcSparedAreaEffect\), adjusted \(p\) \ArcSparedAreaP). The largest improvement was in cortical-thickness asymmetry, which decreased from \ArcSparedThicknessBeforeMedian\% to \ArcSparedThicknessAfterMedian\% (reduction \ArcSparedThicknessDeltaMedian{} points, 95\% CI \ArcSparedThicknessDeltaCILow--\ArcSparedThicknessDeltaCIHigh; \(r=\ArcSparedThicknessEffect\), adjusted \(p\) \ArcSparedThicknessP). None of these endpoints includes an ROI touching the inpainting target.
+
+Total lesion volume was strongly associated with lower WAB score after adjustment for age and assessment delay (partial \(\rho=\ArcClinicalVolumeRho\), 95\% CI \ArcClinicalVolumeCILow{} to \ArcClinicalVolumeCIHigh; adjusted \(p\) \ArcClinicalVolumeP). Using only the original lesion mask and atlas location, left perisylvian lesion burden retained an association after additional adjustment for total lesion volume (partial \(\rho=\ArcClinicalLeftRho\), 95\% CI \ArcClinicalLeftCILow{} to \ArcClinicalLeftCIHigh; adjusted \(p\) \ArcClinicalLeftP; Fig.~\ref{fig:arc-validation}D). The right homolog control was null (\(\rho=\ArcClinicalRightRho\), 95\% CI \ArcClinicalRightCILow{} to \ArcClinicalRightCIHigh; adjusted \(p\) \ArcClinicalRightP), although its interpretation is limited by the almost exclusively left-hemisphere cohort.
+
+\begin{figure}[t!]
+\centering
+\includegraphics[width=0.92\textwidth]{analysis/arc_inpainting/arc_inpainting_validation.pdf}
+\caption{{\bf Spared-anatomy validation.} (A) Tissue-volume, (B) cortical-area, and (C) cortical-thickness asymmetry across homologous ROI pairs entirely outside the dilated inpainting target; points below the diagonal favor the inpainted workflow. (D) WAB Aphasia Quotient versus original-lesion volume localized to the left perisylvian network. The displayed line is an unadjusted visual summary; the partial correlation controls for total lesion volume, age at stroke, and assessment delay. No synthetic intensity or morphometry is used as an endpoint.}\label{fig:arc-validation}
+\end{figure}
+
+\begin{table}[t]
+\caption{Paired BrainSuite endpoints in spared ROI pairs with zero overlap with the dilated inpainting target. Values are median (IQR); improvement is direct/original minus the inpainted workflow with a bootstrap 95\% CI. Holm-adjusted \(p\)-values are from two-sided Wilcoxon tests.}\label{tab:paired-results}
+\centering
+\scriptsize
+\begin{tabular}{lrrrr}
+\toprule
+Endpoint & \(n\) & Direct/original & Inpainted & Improvement (95\% CI); \(p\) \\
+\midrule
+Volume asymmetry (\%) & \ArcSparedVolumeN & \ArcSparedVolumeBeforeMedian{} (\ArcSparedVolumeBeforeQOne--\ArcSparedVolumeBeforeQThree) & \ArcSparedVolumeAfterMedian{} (\ArcSparedVolumeAfterQOne--\ArcSparedVolumeAfterQThree) & \ArcSparedVolumeDeltaMedian{} (\ArcSparedVolumeDeltaCILow--\ArcSparedVolumeDeltaCIHigh), \ArcSparedVolumeP \\
+Area asymmetry (\%) & \ArcSparedAreaN & \ArcSparedAreaBeforeMedian{} (\ArcSparedAreaBeforeQOne--\ArcSparedAreaBeforeQThree) & \ArcSparedAreaAfterMedian{} (\ArcSparedAreaAfterQOne--\ArcSparedAreaAfterQThree) & \ArcSparedAreaDeltaMedian{} (\ArcSparedAreaDeltaCILow--\ArcSparedAreaDeltaCIHigh), \ArcSparedAreaP \\
+Thickness asymmetry (\%) & \ArcSparedThicknessN & \ArcSparedThicknessBeforeMedian{} (\ArcSparedThicknessBeforeQOne--\ArcSparedThicknessBeforeQThree) & \ArcSparedThicknessAfterMedian{} (\ArcSparedThicknessAfterQOne--\ArcSparedThicknessAfterQThree) & \ArcSparedThicknessDeltaMedian{} (\ArcSparedThicknessDeltaCILow--\ArcSparedThicknessDeltaCIHigh), \ArcSparedThicknessP \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion and Conclusion}
+Across 211 acquisition-matched participants, using an inpainted brain as a preprocessing scaffold improved BrainSuite volume, area, and thickness consistency in regions that never intersected the synthetic target. This is the relevant advantage for group studies: the invented tissue itself is not an outcome, but its presence prevents pathology from degrading measurements elsewhere. The WAB analysis is complementary and supports clinical interpretability rather than workflow superiority. It uses the original binary lesion mask for lesion burden and uses the post-inpainting labels only to supply anatomical location; it never interprets generated tissue as surviving cortex or as a quantitative phenotype.
+
+The study also defines the limits of that conclusion. Interhemispheric symmetry is an internal consistency surrogate rather than expert ground truth, and natural asymmetry may be penalized. The downstream comparison combines inpainting with bias correction and affine MNI resampling, while the direct branch uses native-space T1, so it estimates the benefit of the deployed workflow rather than isolating voxel replacement. Spared-ROI eligibility is determined from labels obtained in the inpainted branch, although any pair touching the dilated target is excluded and identical ROI identifiers are compared between branches. The cohort is almost entirely left-lesioned, reflecting its aphasia focus. Finally, this evaluation used one diffusion sample per participant and does not test uncertainty or deformation/pressure outputs. Future work should include expert anatomical quality ratings outside the lesion, a non-inpainted MNI control branch, longitudinal reliability, and repeated diffusion samples. Subject to these limitations, the evidence supports lesion inpainting for stabilizing measurements of real anatomy outside the generated region; it does not validate measurements of the generated tissue.
+
+\begin{credits}
+\subsubsection{\ackname} This study was funded by Anonymized (grant number Anonymized).
+
+\subsubsection{\discintname}
+The authors have no competing interests to declare that are
+relevant to the content of this article.
+\end{credits}
+
+\bibliographystyle{splncs04}
+\bibliography{lesionaware}
+%
+% ---- Bibliography ----
+%
+% BibTeX users should specify bibliography style 'splncs04'.
+% References will then be sorted and formatted in the correct style.
+%
+% \bibliographystyle{splncs04}
+% \bibliography{mybibliography}
+%
+% \begin{thebibliography}{8}
+% \bibitem{ref_article1}
+% Author, F.: Article title. Journal \textbf{2}(5), 99--110 (2016)
+
+% \bibitem{ref_lncs1}
+% Author, F., Author, S.: Title of a proceedings paper. In: Editor,
+% F., Editor, S. (eds.) CONFERENCE 2016, LNCS, vol. 9999, pp. 1--13.
+% Springer, Heidelberg (2016). \doi{10.10007/1234567890}
+
+% \bibitem{ref_book1}
+% Author, F., Author, S., Author, T.: Book title. 2nd edn. Publisher,
+% Location (1999)
+
+% \bibitem{ref_proc1}
+% Author, A.-B.: Contribution title. In: 9th International Proceedings
+% on Proceedings, pp. 1--2. Publisher, Location (2010)
+
+% \bibitem{ref_url1}
+% LNCS Homepage, \url{http://www.springer.com/lncs}, last accessed 2023/10/25
+% \end{thebibliography}
+\end{document}
