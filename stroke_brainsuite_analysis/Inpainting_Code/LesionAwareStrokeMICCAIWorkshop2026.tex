@@ -1,0 +1,430 @@
+% LNCS manuscript for a MICCAI workshop; eight-page main text plus references.
+% Cohort-scale deformation/AQ results are inserted only when a verified
+% analysis/miccai_workshop/aq_results.tex file is present.
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{url}
+
+\graphicspath{{analysis/miccai_workshop/figures/}{analysis/arc_inpainting/}}
+\input{analysis/arc_inpainting/paper_results.tex}
+\newif\ifAQResultsAvailable
+\IfFileExists{analysis/miccai_workshop/aq_results.tex}{%
+  \AQResultsAvailabletrue
+  \input{analysis/miccai_workshop/aq_results.tex}
+}{\AQResultsAvailablefalse}
+
+\newcommand{\plesion}{p_{\mathrm{lesion}}}
+\newcommand{\logJ}{\Delta\!\log J}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+
+\begin{document}
+
+\title{From Lesion Filling to Deformation-Aware Aphasia Modeling:\
+A Lesion-Aware Stroke MRI Workflow}
+\titlerunning{Lesion-Aware Stroke MRI and Aphasia Modeling}
+
+\author{Anonymized Authors}
+\authorrunning{Anonymized Authors}
+\institute{Anonymized Affiliations\\
+\email{email@anonymized.com}}
+
+\maketitle
+
+\begin{abstract}
+Chronic stroke lesions violate the normal-contrast and topology assumptions of
+conventional structural MRI pipelines. We present an auditable workflow that
+combines automatic lesion delineation, voxelwise lesion scores and entropy,
+diffusion inpainting, BrainSuite morphometry, and a contralateral-normalized
+lesion-associated deformation proxy. Synthetic tissue is used only as a
+computational scaffold: every biological endpoint excludes the lesion and its
+dilated inpainting target. In \ArcNMatched{} acquisition-matched ARC
+participants, inpainting improved the stability of target-free BrainSuite
+volume, cortical-area, and cortical-thickness measurements (all
+Holm-adjusted tests significant). Qualitative cases spanning 7.3--216.7~mL
+showed increasingly difficult reconstruction and motivated explicit visual QC.
+Lesion volume was strongly associated with Western Aphasia Battery Aphasia Quotient
+(partial $\rho=\ArcClinicalVolumeRho$), while left perisylvian burden retained
+an association after adjustment for volume, age, and assessment delay
+($\rho=\ArcClinicalLeftRho$). We further define a cross-sectional deformation
+field by removing a contralaterally fitted affine component from SVReg,
+subtracting mirrored contralateral residual deformation, and summarizing radial
+displacement and log-Jacobian asymmetry outside the synthetic target. A
+prespecified repeated nested-cross-validation analysis tests whether lesion
+uncertainty and deformation improve held-out aphasia prediction beyond lesion
+volume and language-network damage. Cohort-scale execution of this secondary
+analysis is ongoing; we therefore report its complete protocol and a
+representative technical result without making a predictive-superiority claim.
+
+\keywords{Stroke \and lesion inpainting \and uncertainty \and deformation
+\and aphasia \and structural MRI}
+\end{abstract}
+
+\section{Introduction}
+Structural MRI processing systems are commonly optimized for intact anatomy.
+Chronic infarcts introduce cavities, gliosis, abnormal intensities, ventricular
+enlargement, and altered cortical topology. Intensity-driven normalization may
+then deform the surrounding brain to explain lesion--template mismatch
+\cite{Brett2001,Andersen2010}; tissue classification and cortical surfaces may
+fail beyond the visible lesion. These failures matter for aphasia studies,
+where large left-hemisphere lesions intersect perisylvian cortex and where
+lesion volume and location are themselves strongly related to behavior.
+
+Lesion filling replaces abnormal intensities before conventional processing.
+Classical inpainting improved nonrigid registration in multiple sclerosis
+\cite{Sdika2009}; modern diffusion approaches synthesize anatomically plausible
+content and improve downstream segmentation of heterogeneous lesions and
+cavities \cite{Ho2020,Pollak2025}. However, plausible appearance is not evidence
+that invented tissue represents the participant's premorbid anatomy. Treating
+generated intensities, labels, or cortical thickness as observed biology would
+create an unidentifiable endpoint. Our guiding principle is therefore to use
+inpainting to stabilize measurements of real tissue while excluding every
+region that touches the synthetic target.
+
+A second challenge is that a binary lesion mask discards ambiguity at the
+boundary, while a third is that lesion volume alone does not describe the
+geometry of the surrounding brain. Chronic lesions can continue to expand and
+the ipsilesional brain can shrink years after stroke
+\cite{Seghier2014,Johnson2024}. This motivates two extensions: (i) retaining the
+segmentation score and its entropy, and (ii) estimating a deformation
+\emph{proxy} relative to the participant's opposite hemisphere. The latter is
+not physical ground-truth mass effect; with one chronic scan it may combine
+collapse, ventricular expansion, remodeling, natural asymmetry, and
+registration error.
+
+This work unifies four linked studies. Study~1 evaluates whether diffusion
+inpainting stabilizes BrainSuite processing outside generated anatomy and
+illustrates performance across lesion burden. Study~2 tests the
+construct validity of atlas-localized lesion burden against WAB Aphasia
+Quotient (AQ). Study~3 produces probabilistic lesion and entropy maps. Study~4
+extracts lesion-associated deformation and prespecifies a leakage-resistant AQ
+prediction comparison. We report completed cohort findings for Studies~1--2,
+the implemented and locally verified outputs for Studies~3--4, and an explicit
+analysis boundary for results still awaiting cohort-scale execution.
+
+\section{Materials and Methods}
+
+\subsection{Cohort and acquisition matching}
+The ARC BIDS archive contains chronic stroke T1-weighted MRI, participant-level
+clinical variables, and WAB measurements. WAB AQ summarizes spontaneous
+speech, comprehension, repetition, and naming on a 0--100 scale, with lower
+scores indicating more severe aphasia \cite{Kertesz1982}. The analysis used the
+intersection of completed direct and inpainted BrainSuite branches: one
+acquisition for each of \ArcNMatched{} participants. If multiple scans were
+available, the case table retained the acquisition paired to the study's WAB
+record. Median lesion volume was \ArcLesionMedian{}~mL (IQR
+\ArcLesionQOne--\ArcLesionQThree); \ArcLeftDominant{} lesions were
+left-dominant and \ArcRightDominant{} was right-dominant. The lesion model was
+trained on ATLAS v2 data, a large expert-delineated stroke resource
+\cite{Liew2022}. The present retrospective computational study used
+de-identified data under the governance of the source study [details
+anonymized for review].
+
+\subsection{Lesion delineation and predictive ambiguity}
+After reorientation, N4 bias correction \cite{Tustison2010}, skull stripping,
+and 12-degree-of-freedom affine alignment to a 1-mm symmetric MNI template, a
+3D full-resolution nnU-Net \cite{Isensee2021} generated two-class softmax
+scores. We retain the lesion channel $\plesion(x)\in[0,1]$ as a float32 NIfTI
+and define the hard mask by $\plesion\geq0.5$. Importantly,
+$\plesion$ is a predictive score, not a hypothesis-test $p$-value. It has not
+yet been calibrated on held-out manual ARC delineations; deep segmentation
+models can be overconfident \cite{Guo2017,Mehrtash2020}.
+
+Voxelwise ambiguity is the normalized Bernoulli entropy
+\begin{equation}
+ H(x)=-\frac{\plesion(x)\log \plesion(x)+
+ [1-\plesion(x)]\log[1-\plesion(x)]}{\log 2}.
+ \label{eq:entropy}
+\end{equation}
+It is zero near scores 0 and 1 and maximal at 0.5. This is score ambiguity, not
+a decomposition of aleatoric and epistemic uncertainty. Stored summaries
+include expected lesion volume $\sum_x\plesion(x)v_x$, left/right expected
+volume, entropy mass $\sum_xH(x)v_x$, mean candidate and boundary entropy,
+high-entropy volume, and volumes across thresholds 0.10--0.90. The original
+hard lesion and the soft summaries are both retained so downstream models can
+test incremental value rather than silently replacing established lesion
+features.
+
+\subsection{Diffusion inpainting and BrainSuite processing}
+The hard lesion is dilated by 3~mm within the brain to form the inpainting
+target. A conditional 3D U-Net denoising diffusion model, trained with irregular
+synthetic masks, receives the normalized brain and target and performs 1,000
+reverse steps. Generated intensities undergo robust affine and monotonic
+boundary-quantile matching followed by a 3-mm physical-space feather. Voxels
+outside the target are copied exactly from the registered input. One generated
+sample was used per participant in the completed morphometric study.
+
+The inpainted T1 is processed with BrainSuite v23a
+\cite{Shattuck2002}: skull stripping, tissue classification, cortical surface
+extraction, cortical thickness, and surface-constrained volumetric registration
+(SVReg) \cite{Joshi2009}. The same native acquisition is also processed
+directly. Because the deployed branches differ in preprocessing and coordinate
+grid, their comparison evaluates the complete lesion-aware workflow, not the
+isolated causal effect of changing target voxels.
+
+\subsection{Study 1: downstream processing validation}
+BrainSuite labels $1000+\mathrm{ROI}$ and $2000+\mathrm{ROI}$ were reduced to
+canonical cortical identifiers. A homologous left/right ROI pair was eligible
+only if neither side contained even one voxel of the dilated target. Thus,
+generated tissue and its blending margin contributed no volume, surface area,
+or thickness endpoint. Processing stability was quantified by the normalized
+discordance of each eligible homologous pair,
+\begin{equation}
+ D(q_L,q_R)=200\frac{|q_L-q_R|}{q_L+q_R}.
+ \label{eq:asymmetry}
+\end{equation}
+The participant-level endpoint was the median over eligible pairs. This was a
+secondary internal-consistency check, not reconstruction accuracy: normal
+hemispheric differences can also increase $D$. Primary workflow evidence also
+included exact preservation outside the target, completion of volumetric and
+surface processing, and visual review across lesion-volume percentiles.
+
+\subsection{Study 2: aphasia construct validity}
+The original binary lesion, never the generated tissue, was intersected with
+post-inpainting atlas labels. A prespecified left perisylvian network contained
+pars opercularis, triangularis, and orbitalis; supramarginal and angular gyri;
+superior, transverse, and middle temporal gyri; and insula. Partial Spearman
+correlation related left-network lesion burden to AQ while controlling for
+total lesion volume, age at stroke, and $\log(1+\mathrm{WAB\ days})$. Total
+volume controlled for age and assessment delay; the right homolog network was
+a negative anatomical control.
+
+\subsection{Study 3: lesion-associated deformation proxy}
+SVReg's inverse coordinate map $F(\vect{x})$ gives the subject-voxel coordinate
+corresponding to atlas voxel $\vect{x}$. On valid contralateral brain voxels, a
+robust affine map $F_A(\vect{x})=M\vect{x}+\vect{b}$ is fitted with iterative
+median-absolute-deviation outlier rejection. Removing this global component and
+mapping its residual back to atlas axes gives
+\begin{equation}
+ \vect{u}(\vect{x})=M^{-1}\{F(\vect{x})-F_A(\vect{x})\},
+ \label{eq:residual}
+\end{equation}
+expressed in atlas-aligned millimeters and smoothed with a 2-mm Gaussian kernel.
+Let $R$ reflect position through the atlas midline and reflect a vector's
+left--right component. The lesion-associated asymmetry field is
+\begin{equation}
+ \vect{u}_{L}(\vect{x})=\vect{u}(\vect{x})-R\vect{u}(R\vect{x}).
+ \label{eq:mirror}
+\end{equation}
+Both members of a mirrored pair must lie in the atlas and mapped subject brain
+masks. The lesion, dilated target, and reflected target are excluded. Cases
+with lesion laterality below 0.80 are flagged as unsupported.
+
+Magnitude is $m=\|\vect{u}_L\|$. Outside the lesion, the gradient of its signed
+distance map gives outward unit normal $\vect{n}$; radial displacement is
+$r=\vect{u}_L\cdot\vect{n}$, with $r>0$ outward and $r<0$ inward. Local volume
+change uses $J=\det(I+\nabla\vect{u})$ and
+$\logJ(\vect{x})=\log J(\vect{x})-\log J(R\vect{x})$, following the
+deformation-based morphometry interpretation of Jacobians
+\cite{Chung2001}. Nonpositive Jacobians are invalid. Magnitude, radial, and
+$\logJ$ are summarized in 3--5, 5--10, 10--20, and 20--40~mm shells. Although
+Jacobian deformation has been related to radiologist-rated tumor mass effect
+\cite{Zacharaki2009}, a chronic infarct is not space occupying; we therefore
+avoid a mechanistic pressure claim.
+
+The direct, non-inpainted SVReg branch is normalized identically. The magnitude
+$\|\vect{u}_{L,\mathrm{inp}}-\vect{u}_{L,\mathrm{raw}}\|$ is stored as
+registration sensitivity, not biological deformation. This comparison and
+the exclusion of synthetic voxels address the known tendency of lesions to
+bias nonlinear registration \cite{Brett2001,Sdika2009}.
+
+\subsection{Study 4: incremental AQ prediction}
+Table~\ref{tab:models} defines prespecified ridge-regression models. The primary
+contrast asks whether deformation improves prediction beyond age, assessment
+delay, total lesion volume, laterality, and left/right language-network lesion
+burden. Eight compact 3--20~mm features are used: median and 95th-percentile
+magnitude; median and mean-absolute radial displacement; outward and inward
+radial integrals; and positive and negative log-Jacobian integrals. A secondary
+model adds raw--inpainted sensitivity and contralateral affine-fit RMSE to test
+whether apparent benefit is registration-driven. If uncertainty coverage is at
+least 90\%, soft volume, entropy, boundary ambiguity, and threshold-sensitivity
+features are added to the conventional lesion model, followed by deformation.
+
+\begin{table}[t]
+\caption{Prespecified AQ prediction models, evaluated on one identical
+QC-passing cohort. Features are cumulative from top to bottom within each
+comparison.}
+\label{tab:models}
+\centering
+\scriptsize
+\begin{tabularx}{\textwidth}{p{0.28\textwidth}X}
+\toprule
+Model & Predictors \\
+\midrule
+Clinical & Age at stroke; $\log(1+\mathrm{WAB\ days})$ \\
+Conventional lesion & Clinical; lesion volume; left/right language-network burden; laterality \\
+Lesion + deformation & Conventional lesion; magnitude, radial, and log-Jacobian summaries \\
++ registration QC & Above; raw--inpainted field sensitivity; affine-fit RMSE \\
+Lesion + uncertainty & Conventional lesion; expected volumes, entropy mass, boundary/candidate entropy, threshold volumes \\
+Uncertainty + deformation & Lesion + uncertainty; deformation summaries \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Eligible fields require supported laterality, folding fraction $\leq0.05$, and
+at least 1,000 valid voxels 3--20~mm from the lesion. Missing predictors are
+median-imputed, standardized, and fitted with ridge regression entirely inside
+each training fold. Five-fold outer cross-validation is repeated 20 times; a
+four-fold inner loop selects $\alpha\in10^{-4},\ldots,10^4$ by mean absolute
+error (MAE). Nested evaluation avoids parameter-selection bias
+\cite{Varma2006}. Outcomes are out-of-fold MAE, RMSE, $R^2$, and Pearson $r$.
+The primary paired advantage is each participant's mean absolute error under
+the conventional model minus that under the deformation model; positive values
+favor deformation. We prespecify participant bootstrap confidence intervals,
+two-sided paired Wilcoxon tests, and Holm correction \cite{Holm1979}.
+
+\subsection{Statistical analysis for completed endpoints}
+Study~1 used two-sided paired Wilcoxon tests, participant-bootstrap 95\%
+confidence intervals (10,000 resamples), and rank-biserial effect sizes.
+Study~2 used bootstrap intervals for partial Spearman correlations. Holm
+correction was applied separately across the three morphometric endpoints and
+the three clinical associations. All scripts preserve case-level inputs,
+out-of-fold predictions, exact configurations, and subject QC images.
+
+\section{Results}
+
+\subsection{Completed inpainting and clinical validation}
+All \ArcNAnalyzed{} inpainted images were finite, shared the expected 1-mm
+geometry, and were exactly unchanged outside the dilated target.
+Figure~\ref{fig:outputs}A illustrates completed BrainSuite processing for
+cases nearest the 10th, 50th, and 90th lesion-volume percentiles. Inpainting
+provided a continuous substrate for volumetric labeling and surface extraction
+at each size. The largest case also shows why synthetic tissue must not be
+interpreted biologically: its filled anatomy is visibly less plausible and
+requires explicit QC. The medium case was therefore used for the complete
+representative-output figure below.
+
+As a supporting target-free stability check, median tissue-volume discordance
+decreased from
+\ArcSparedVolumeBeforeMedian\% to \ArcSparedVolumeAfterMedian\% (median paired
+improvement \ArcSparedVolumeDeltaMedian{} points, 95\% CI
+\ArcSparedVolumeDeltaCILow--\ArcSparedVolumeDeltaCIHigh; rank-biserial
+$r=\ArcSparedVolumeEffect$, adjusted $p$ \ArcSparedVolumeP). Area discordance
+decreased from \ArcSparedAreaBeforeMedian\% to \ArcSparedAreaAfterMedian\%
+(improvement \ArcSparedAreaDeltaMedian{}, CI
+\ArcSparedAreaDeltaCILow--\ArcSparedAreaDeltaCIHigh; $r=\ArcSparedAreaEffect$,
+adjusted $p$ \ArcSparedAreaP). Thickness discordance decreased from
+\ArcSparedThicknessBeforeMedian\% to \ArcSparedThicknessAfterMedian\%
+(improvement \ArcSparedThicknessDeltaMedian{}, CI
+\ArcSparedThicknessDeltaCILow--\ArcSparedThicknessDeltaCIHigh;
+$r=\ArcSparedThicknessEffect$, adjusted $p$ \ArcSparedThicknessP).
+
+Total lesion volume was strongly associated with lower AQ after adjustment for
+age and assessment delay (partial $\rho=\ArcClinicalVolumeRho$, 95\% CI
+\ArcClinicalVolumeCILow{} to \ArcClinicalVolumeCIHigh; adjusted $p$
+\ArcClinicalVolumeP). Left perisylvian burden retained an association after
+additional adjustment for total volume ($\rho=\ArcClinicalLeftRho$, CI
+\ArcClinicalLeftCILow{} to \ArcClinicalLeftCIHigh; adjusted $p$
+\ArcClinicalLeftP), whereas the right homolog control was null
+($\rho=\ArcClinicalRightRho$, adjusted $p$ \ArcClinicalRightP). The control is
+limited by the cohort's near-complete left-lesion enrichment.
+
+\subsection{Representative probability and deformation outputs}
+Figure~\ref{fig:outputs}B presents the complete stored output for one
+representative medium left-hemisphere case (the 50th-percentile case in
+Fig.~\ref{fig:outputs}A). Expected lesion volume was
+79.09~mL versus 78.73~mL at the 0.5 threshold, and entropy mass was 24.52~mL.
+Entropy concentrated along the score transition, while remaining nonzero in
+ambiguous internal regions. The deformation field passed prespecified QC:
+lesion laterality was 1.00, folding fraction was 1.31\%, median 3--20~mm
+magnitude was 5.28~mm, median radial displacement was $+0.12$~mm, and mean
+absolute radial displacement was 3.15~mm. Median raw--inpainted registration
+sensitivity was 3.32~mm, giving a proxy-to-sensitivity ratio of 1.59. This
+figure is technical feasibility, not a subject-specific clinical interpretation.
+
+\begin{figure}[p]
+\centering
+\includegraphics[height=0.49\textheight]{representative_outputs/arc_representative_brainsuite_outputs.pdf}\par
+\vspace{1mm}
+\includegraphics[width=0.78\textwidth]{representative_subject_outputs.pdf}
+\caption{\textbf{Inpainting and derived outputs.} (A) Original/inpainted cases
+nearest the 10th, 50th, and 90th lesion-volume percentiles (7.3, 78.6, and
+216.7~mL), with T1, volumetric atlas labels, and midcortical labels. The large
+case exposes reduced visual plausibility. (B) Complete outputs for the medium
+case: observed T1/lesion, uncalibrated $\plesion$, entropy, inpainted T1,
+atlas-mapped anatomy, deformation magnitude, radial displacement, and
+log-Jacobian asymmetry. Generated regions are processing scaffolds; target
+voxels and their mirrors are excluded from deformation summaries.}
+\label{fig:outputs}
+\end{figure}
+
+\subsection{Status of the incremental AQ study}
+\ifAQResultsAvailable
+The verified cohort analysis included \AQAnalysisN{} participants. Mean
+repeated outer-CV MAE was \AQStandardMAE{} AQ points for the conventional
+lesion model and \AQDeformationMAE{} after adding deformation. The paired MAE
+advantage was \AQDeformationAdvantage{} points (participant-bootstrap 95\% CI
+\AQDeformationAdvantageCI; Holm-adjusted $p=\AQDeformationP$).
+\else
+The cohort-wide jobs were incomplete at manuscript generation; no uncertainty
+or deformation superiority result is reported. Code requires at least 90\%
+uncertainty coverage, applies identical cohort filtering, and writes this
+paragraph's values only after repeated nested cross-validation. Thus, the
+representative case cannot be mistaken for a cohort result.
+\fi
+
+\section{Discussion}
+The completed cohort analysis supports lesion inpainting for a narrow but useful
+purpose: a continuous computational substrate that preserves observed anatomy
+outside the generated region. Exact outside-target preservation and completed
+processing across lesion sizes are primary; paired target-free discordance is
+supporting evidence. The difficult 90th-percentile case shows that completion
+alone is not success. Post-inpainting labels also localized the retained
+original lesion sufficiently to reproduce an expected AQ relationship, but
+neither analysis validates invented cortex.
+
+The uncertainty representation addresses a different question. A binary mask
+commits to one contour; $\plesion$ retains boundary confidence and permits
+expected-volume calculations. Yet a softmax score is not a statistical
+$p$-value and its entropy is not calibrated uncertainty. Manual ARC masks are
+needed for calibration, Brier score, and threshold-conditioned Dice; ensembles
+would characterize model uncertainty more directly \cite{Mehrtash2020}.
+
+True mass effect is causal mechanical displacement from a premorbid state; our
+cross-sectional proxy instead measures left--right registration geometry after
+affine removal. It assumes usable hemispheric homology and is unsuitable for
+bilateral lesions. Positive radial values need not mean continuing pressure,
+while negative values may reflect collapse. Natural anatomy, masking, and SVReg
+regularization remain confounds, so field sensitivity, folding, affine residual,
+valid coverage, and subject figures are mandatory QC.
+
+The AQ experiment is incremental, not causal. Including lesion volume and
+language-network burden prevents deformation from receiving credit merely as a
+surrogate of size or side; nested preprocessing prevents leakage. Any advantage
+must survive fold variation and registration-sensitivity adjustment before
+external validation.
+
+Limitations include no premorbid/acute reference or expert anatomical ground
+truth, preprocessing-grid differences between direct and inpainted branches,
+natural hemispheric differences in the supporting paired endpoint, and strong left-lesion enrichment.
+Only one generative sample was used, scores are uncalibrated, and cohort-scale
+uncertainty/deformation results remain pending. Priorities are non-inpainted and
+normative controls, tissue-specific GM/WM summaries, calibration, and external
+AQ validation.
+
+\section{Conclusion}
+Lesion-aware processing enabled BrainSuite analysis across lesion sizes while
+preserving clinically meaningful lesion localization; visual QC remains
+essential for large lesions. Probabilistic delineation, auditable contralateral
+deformation, and leakage-resistant AQ testing extend the workflow without
+treating synthetic anatomy or cross-sectional deformation as ground truth.
+
+\begin{credits}
+\subsubsection{Acknowledgments.} Funding and computing resources were provided
+by Anonymized.
+
+\subsubsection{Disclosure of Interests.} None.
+\end{credits}
+
+\clearpage
+\bibliographystyle{splncs04}
+\bibliography{lesionaware_miccai}
+
+\end{document}
