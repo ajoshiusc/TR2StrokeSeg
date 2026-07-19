@@ -15,11 +15,7 @@
 
 \graphicspath{{analysis/miccai_workshop/figures/}{analysis/arc_inpainting/}}
 \input{analysis/arc_inpainting/paper_results.tex}
-\newif\ifAQResultsAvailable
-\IfFileExists{analysis/miccai_workshop/aq_results.tex}{%
-  \AQResultsAvailabletrue
-  \input{analysis/miccai_workshop/aq_results.tex}
-}{\AQResultsAvailablefalse}
+\input{analysis/miccai_workshop/aq_results.tex}
 
 \newcommand{\plesion}{p_{\mathrm{lesion}}}
 \newcommand{\logJ}{\Delta\!\log J}
@@ -59,9 +55,16 @@ subtracting mirrored contralateral residual deformation, and summarizing radial
 displacement and log-Jacobian asymmetry outside the synthetic target. A
 prespecified repeated nested-cross-validation analysis tests whether lesion
 uncertainty and deformation improve held-out aphasia prediction beyond lesion
-volume and language-network damage. Cohort-scale execution of this secondary
-analysis is ongoing; we therefore report its complete protocol and a
-representative technical result without making a predictive-superiority claim.
+volume and language-network damage. Among \AQAnalysisN{} QC-passing
+participants, mean repeated-CV MAE was \AQStandardMAE{} AQ points for the
+conventional lesion model, \AQDeformationMAE{} with deformation,
+\AQUncertaintyMAE{} with uncertainty, and \AQCombinedMAE{} with both. Every
+bootstrap interval for mean advantage over the lesion model included zero.
+Adding deformation after uncertainty yielded an advantage of
+\AQDeformationAfterUncertaintyAdvantage{} points (95\% CI
+\AQDeformationAfterUncertaintyCI; $p=\AQDeformationAfterUncertaintyP$), showing
+no additive benefit. Thus, soft lesion summaries achieved the lowest MAE, but
+neither extension demonstrated robust predictive superiority.
 
 \keywords{Stroke \and lesion inpainting \and uncertainty \and deformation
 \and aphasia \and structural MRI}
@@ -105,9 +108,9 @@ illustrates performance across lesion burden. Study~2 tests the
 construct validity of atlas-localized lesion burden against WAB Aphasia
 Quotient (AQ). Study~3 produces probabilistic lesion and entropy maps. Study~4
 extracts lesion-associated deformation and prespecifies a leakage-resistant AQ
-prediction comparison. We report completed cohort findings for Studies~1--2,
-the implemented and locally verified outputs for Studies~3--4, and an explicit
-analysis boundary for results still awaiting cohort-scale execution.
+prediction comparison. We report completed cohort findings for all four
+studies, including repeated nested-CV comparisons on one identically filtered
+cohort.
 
 \section{Materials and Methods}
 
@@ -278,7 +281,10 @@ error (MAE). Nested evaluation avoids parameter-selection bias
 The primary paired advantage is each participant's mean absolute error under
 the conventional model minus that under the deformation model; positive values
 favor deformation. We prespecify participant bootstrap confidence intervals,
-two-sided paired Wilcoxon tests, and Holm correction \cite{Holm1979}.
+two-sided paired Wilcoxon tests, and Holm correction across comparisons with
+the conventional lesion model \cite{Holm1979}. The direct comparison of adding
+deformation after uncertainty was reported separately as a prespecified
+incremental contrast.
 
 \subsection{Statistical analysis for completed endpoints}
 Study~1 used two-sided paired Wilcoxon tests, participant-bootstrap 95\%
@@ -355,20 +361,64 @@ voxels and their mirrors are excluded from deformation summaries.}
 \label{fig:outputs}
 \end{figure}
 
-\subsection{Status of the incremental AQ study}
-\ifAQResultsAvailable
-The verified cohort analysis included \AQAnalysisN{} participants. Mean
-repeated outer-CV MAE was \AQStandardMAE{} AQ points for the conventional
-lesion model and \AQDeformationMAE{} after adding deformation. The paired MAE
-advantage was \AQDeformationAdvantage{} points (participant-bootstrap 95\% CI
-\AQDeformationAdvantageCI; Holm-adjusted $p=\AQDeformationP$).
-\else
-The cohort-wide jobs were incomplete at manuscript generation; no uncertainty
-or deformation superiority result is reported. Code requires at least 90\%
-uncertainty coverage, applies identical cohort filtering, and writes this
-paragraph's values only after repeated nested cross-validation. Thus, the
-representative case cannot be mistaken for a cohort result.
-\fi
+\subsection{Incremental AQ prediction}
+Of 211 cases matched to the clinical table, one failed the prespecified
+deformation QC, leaving \AQAnalysisN{} participants; uncertainty coverage was
+100\%. Table~\ref{tab:aq-results} and Fig.~\ref{fig:aq-prediction} summarize the
+20 repeated nested-CV runs. The clinical-only model was poor
+(MAE \AQClinicalMAE{}), whereas the conventional lesion model achieved MAE
+\AQStandardMAE{}. Deformation reduced mean MAE to \AQDeformationMAE{}, and the
+registration-QC-augmented sensitivity model was similar
+(\AQDeformationQCMAE{}). The uncertainty model achieved the lowest MAE
+(\AQUncertaintyMAE{}); the combined uncertainty--deformation model had MAE
+\AQCombinedMAE{}, the lowest RMSE (\AQCombinedRMSE{}), and the highest
+$R^2$ (\AQCombinedRSquared{}) and $r$ (\AQCombinedCorrelation{}), although
+these differences were small.
+
+Against the conventional lesion model, mean participant-level MAE advantages
+were \AQDeformationAdvantage{} points for deformation (95\% bootstrap CI
+\AQDeformationAdvantageCI; Holm-adjusted signed-rank
+$p=\AQDeformationP$) and \AQUncertaintyAdvantage{} for uncertainty (CI
+\AQUncertaintyAdvantageCI; $p=\AQUncertaintyP$). The combined model's advantage
+was \AQCombinedAdvantage{} (CI \AQCombinedAdvantageCI;
+$p=\AQCombinedP$). Although the signed-rank tests detected distributional
+shifts, every bootstrap interval for the \emph{mean} advantage crossed zero.
+Evidence for improvement was therefore modest rather than definitive. Most
+importantly, adding deformation directly to the uncertainty model changed mean
+MAE advantage by only \AQDeformationAfterUncertaintyAdvantage{} points (CI
+\AQDeformationAfterUncertaintyCI; signed-rank
+$p=\AQDeformationAfterUncertaintyP$), providing no evidence of additive value.
+
+\begin{table}[t]
+\caption{Repeated nested-CV AQ prediction on the identical \AQAnalysisN-subject
+cohort. Values are means across 20 outer-CV repeats.}
+\label{tab:aq-results}
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Model & MAE & RMSE & $R^2$ & Pearson $r$ \\
+\midrule
+Clinical only & \AQClinicalMAE & \AQClinicalRMSE & \AQClinicalRSquared & \AQClinicalCorrelation \\
+Conventional lesion & \AQStandardMAE & \AQStandardRMSE & \AQStandardRSquared & \AQStandardCorrelation \\
+Lesion + deformation & \AQDeformationMAE & \AQDeformationRMSE & \AQDeformationRSquared & \AQDeformationCorrelation \\
++ deformation + registration QC & \AQDeformationQCMAE & \AQDeformationQCRMSE & \AQDeformationQCRSquared & \AQDeformationQCCorrelation \\
+Lesion + uncertainty & \AQUncertaintyMAE & \AQUncertaintyRMSE & \AQUncertaintyRSquared & \AQUncertaintyCorrelation \\
+Uncertainty + deformation & \AQCombinedMAE & \AQCombinedRMSE & \AQCombinedRSquared & \AQCombinedCorrelation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{aq_prediction_comparison.pdf}
+\caption{\textbf{Completed AQ model comparison.} (A) MAE distributions across
+20 repeated nested-CV splits. (B) Mean participant-level MAE advantage relative
+to the conventional lesion model; positive values favor the augmented model.
+Bars are 95\% participant-bootstrap CIs and $p_H$ denotes the Holm-adjusted
+paired Wilcoxon result. All mean-advantage intervals cross zero.}
+\label{fig:aq-prediction}
+\end{figure}
 
 \section{Discussion}
 The completed cohort analysis supports lesion inpainting for a narrow but useful
@@ -382,10 +432,14 @@ neither analysis validates invented cortex.
 
 The uncertainty representation addresses a different question. A binary mask
 commits to one contour; $\plesion$ retains boundary confidence and permits
-expected-volume calculations. Yet a softmax score is not a statistical
-$p$-value and its entropy is not calibrated uncertainty. Manual ARC masks are
-needed for calibration, Brier score, and threshold-conditioned Dice; ensembles
-would characterize model uncertainty more directly \cite{Mehrtash2020}.
+expected-volume calculations. These summaries produced the lowest mean MAE,
+suggesting that contour ambiguity carries information not fully represented by
+hard volume and language-network burden. The bootstrap interval nevertheless
+included zero, so this is not definitive superiority. Moreover, a softmax score
+is not a statistical $p$-value and its entropy is not calibrated uncertainty.
+Manual ARC masks are needed for calibration, Brier score, and
+threshold-conditioned Dice; ensembles would characterize model uncertainty
+more directly \cite{Mehrtash2020}.
 
 True mass effect is causal mechanical displacement from a premorbid state; our
 cross-sectional proxy instead measures left--right registration geometry after
@@ -395,26 +449,33 @@ while negative values may reflect collapse. Natural anatomy, masking, and SVReg
 regularization remain confounds, so field sensitivity, folding, affine residual,
 valid coverage, and subject figures are mandatory QC.
 
-The AQ experiment is incremental, not causal. Including lesion volume and
-language-network burden prevents deformation from receiving credit merely as a
-surrogate of size or side; nested preprocessing prevents leakage. Any advantage
-must survive fold variation and registration-sensitivity adjustment before
-external validation.
+The AQ experiment is incremental, not causal. Deformation modestly lowered mean
+MAE relative to the conventional lesion model, and registration-QC covariates
+did not erase that pattern. However, the mean-advantage interval crossed zero,
+and deformation added nothing after uncertainty. The significant signed-rank
+tests and nonsignificant bootstrap mean intervals address different summaries
+of a skewed subject-error distribution; together they argue against a strong
+superiority claim. Including lesion volume and language-network burden prevents
+deformation from receiving credit merely as a surrogate of size or side, while
+nested preprocessing limits leakage.
 
 Limitations include no premorbid/acute reference or expert anatomical ground
 truth, preprocessing-grid differences between direct and inpainted branches,
 natural hemispheric differences in the supporting paired endpoint, and strong left-lesion enrichment.
-Only one generative sample was used, scores are uncalibrated, and cohort-scale
-uncertainty/deformation results remain pending. Priorities are non-inpainted and
-normative controls, tissue-specific GM/WM summaries, calibration, and external
-AQ validation.
+Only one generative sample was used, scores are uncalibrated, and repeated CV is
+not external validation. Priorities are non-inpainted and normative controls,
+tissue-specific GM/WM summaries, probability calibration, and external AQ
+validation.
 
 \section{Conclusion}
 Lesion-aware processing enabled BrainSuite analysis across lesion sizes while
 preserving clinically meaningful lesion localization; visual QC remains
 essential for large lesions. Probabilistic delineation, auditable contralateral
 deformation, and leakage-resistant AQ testing extend the workflow without
-treating synthetic anatomy or cross-sectional deformation as ground truth.
+treating synthetic anatomy or cross-sectional deformation as ground truth. Soft
+lesion summaries yielded the lowest mean prediction error; deformation showed
+no additive benefit once uncertainty was present, supporting cautious use of
+both as complementary rather than proven superior biomarkers.
 
 \begin{credits}
 \subsubsection{Acknowledgments.} Funding and computing resources were provided

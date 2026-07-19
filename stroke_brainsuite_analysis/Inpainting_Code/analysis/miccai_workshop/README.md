@@ -8,7 +8,9 @@ latexmk -pdf -interaction=nonstopmode -halt-on-error \
   LesionAwareStrokeMICCAIWorkshop2026.tex
 ```
 
-The current PDF has eight manuscript pages; references start on page 9.
+The completed-results PDF has ten manuscript pages; references start on page
+11. This uses the user's allowance of up to two pages beyond the original
+eight-page target.
 
 ## Representative-subject figure
 
@@ -25,17 +27,22 @@ and log-Jacobian asymmetry for the same medium-volume subject. This is the
 50th-percentile case in the existing small/medium/large inpainting figure; the
 previous large-lesion case is not used because its inpainting failed visual QC.
 
-## Inserting cohort AQ-comparison results
+## Cohort AQ-comparison results
 
-The paper intentionally does not invent results for CARC jobs that have not yet
-finished.  When the nested-CV AQ comparison completes, copy its generated macro
-file to:
+The completed 210-participant nested-CV analysis is incorporated through:
 
 ```text
 analysis/miccai_workshop/aq_results.tex
 ```
 
-The manuscript detects that file automatically and replaces the prospective AQ
-results paragraph with the cohort size, baseline and deformation-aware MAEs,
-paired advantage and confidence interval, and permutation p-value. Rebuild the
-PDF afterward with the command above.
+The source CARC results are under
+`ARC/derivatives/aq_mass_effect_comparison`. The manuscript reports all six
+models, bootstrap mean-advantage intervals, Holm-adjusted paired Wilcoxon tests,
+and the direct uncertainty-versus-uncertainty-plus-deformation comparison.
+
+Regenerate the paper-specific comparison figure from the saved CSV files with:
+
+```bash
+.venv/bin/python \
+  stroke_brainsuite_analysis/Inpainting_Code/make_aq_paper_figure.py
+```
